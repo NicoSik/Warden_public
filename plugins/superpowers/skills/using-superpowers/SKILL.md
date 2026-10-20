@@ -31,6 +31,17 @@ When multiple skills apply, process skills come first — they set the approach,
 - "Fix this bug" → superpowers:systematic-debugging first, then domain skills.
 - An empty prompt, or one too vague to act on → superpowers:brainstorming. It interviews before it classifies, so a vague ask is the case it is built for, not a reason to wait.
 
+## Code Map
+
+If `graphify-out/graph.json` exists in the repository, explore code in this order:
+
+1. Run `graphify query "<question>"` before the first grep, find, or source-file read.
+2. Run `graphify path "<A>" "<B>"` to find how two symbols connect, and `graphify explain "<symbol>"` for one symbol.
+3. Read source files only at the files and lines the graph names.
+4. After you change code, run `graphify update .` to rebuild the graph.
+
+Put these four steps in every subagent prompt that explores code.
+
 ## Red Flags
 
 These thoughts mean STOP—you're rationalizing:
