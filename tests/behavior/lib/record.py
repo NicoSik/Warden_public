@@ -79,17 +79,19 @@ def cleanup(results):
 
 
 def grade_run(case, rule, run):
-    """Return (hit, detail). hit is True/False, or None when the run cannot be judged."""
+    """Return (hit, detail). hit is True/False, or None for an errored run (counted in neither direction)."""
+    if run.get("error"):
+        return None, "errored (%s)" % run.get("error")
     if case == "read-order":
         val, first = graph_first(run.get("tracePath"))
         if val is None:
-            return None, "graph_first unavailable (%s)" % first
+            return None, "errored (graph_first unavailable: %s)" % first
         return val == 1, "graph_first=%d first=%s" % (val, first)
     for g in run.get("graders") or []:
         if g.get("name") == "triggered":
             trig = bool(g.get("passed")) if rule == "at-least" else not bool(g.get("passed"))
             return trig, "triggered=%s" % ("yes" if trig else "no")
-    return None, "no triggered grader"
+    return None, "errored (no triggered grader)"
 
 
 def main():
@@ -154,9 +156,12 @@ def main():
                     return 2
                 runs = (item.get("arms") or {}).get("with") or []
                 hits = 0
+                errored = 0
                 for i, r in enumerate(runs, 1):
                     hit, detail = grade_run(case, rule, r)
-                    if hit:
+                    if hit is None:
+                        errored += 1
+                    elif hit:
                         hits += 1
                     cost = r.get("costUsd") or 0
                     total_cost += cost
@@ -167,13 +172,15 @@ def main():
                 op = ">=" if rule == "at-least" else "<="
                 if arm == "candidate":
                     ok = hits >= int(count) if rule == "at-least" else hits <= int(count)
+                    if errored:
+                        ok = False
                     verdict = "PASS" if ok else "FAIL"
                     failed = failed or not ok
                     crit = "%s %s %s" % (what, op, count)
                 else:
                     verdict = "report only"
                     crit = "(%s %s %s)" % (what, op, count)
-                rows.append((case, arm, sha, "%d/%d" % (hits, len(runs)), crit, verdict))
+                rows.append((case, arm, sha, "%d/%d%s" % (hits, len(runs), " (%d errored)" % errored if errored else ""), crit, verdict))
 
         today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
         out = []

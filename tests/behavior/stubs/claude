@@ -61,8 +61,13 @@ for name in os.environ["STUB_CASES"].split():
         else:
             passed = trig if name == "setup-planning" else (not trig)
             graders = [{"name": "triggered", "passed": passed, "explanation": "", "weight": 1, "withOnly": False, "scored": True}]
+        if i < int(os.environ.get("STUB_ERR_%s_%s" % (n, key), 0)):
+            graders = []
+            err = "timeout"
+        else:
+            err = None
         out.append({"score": 1.0, "passed": True, "turns": 3, "costUsd": 0.05,
-                    "error": None, "tracePath": tp, "graders": graders})
+                    "error": err, "tracePath": tp, "graders": graders})
     cases.append({"name": name, "dir": "x", "arms": {"with": out}, "aggregates": {}})
 res = {"schemaVersion": 1, "claudeVersion": "2.1.305", "startedAt": "2026-10-21T00:00:00Z",
        "durationSeconds": 1, "costUsd": 0.05 * runs * len(cases), "partial": os.environ.get("STUB_PARTIAL") == "1",

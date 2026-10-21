@@ -9,10 +9,11 @@ STUBS="$HERE/../stubs"
 
 T=$(mktemp -d "${TMPDIR:-/tmp}/warden-runner-test.XXXXXX")
 trap 'rm -rf "$T"' EXIT
-mkdir -p "$T/home" "$T/tmp" "$T/bin" "$T/bin-noclaude" "$T/runs" "$T/raw"
+mkdir -p "$T/home" "$T/tmp" "$T/bin" "$T/bin-nographify" "$T/bin-noclaude" "$T/runs" "$T/raw"
 ln -s "$STUBS/claude" "$T/bin/claude"
 ln -s "$STUBS/graphify" "$T/bin/graphify"
-ln -s "$STUBS/claude" "$T/bin-noclaude/claude"
+ln -s "$STUBS/claude" "$T/bin-nographify/claude"
+ln -s "$STUBS/graphify" "$T/bin-noclaude/graphify"
 
 export HOME="$T/home" TMPDIR="$T/tmp" STUB_TMP="$T/tmp"
 export WARDEN_STUB_LOG="$T/stub.log"
@@ -34,8 +35,8 @@ STATUS_BEFORE=$(git status --porcelain)
 
 # 1. no graphify -> exit 3, no eval
 reset
-out=$(PATH="$T/bin-noclaude:$SYSPATH" bash "$RUN" --yes 2>&1); rc=$?
-[ "$rc" -eq 3 ] && [ "$(evals)" -eq 0 ] && pass "1 missing graphify: exit 3, no eval" || fail "1 missing graphify: rc=$rc evals=$(evals): $out"
+out=$(PATH="$T/bin-nographify:$SYSPATH" WARDEN_STUB_EXPECT_CLAUDE="$T/bin-nographify/claude" bash "$RUN" --yes 2>&1); rc=$?
+[ "$rc" -eq 3 ] && [ "$(evals)" -eq 0 ] && printf '%s' "$out" | grep -q "graphify --version" && pass "1 missing graphify: exit 3, no eval" || fail "1 missing graphify: rc=$rc evals=$(evals): $out"
 
 # 2. API key set -> exit 3, names variable
 reset
@@ -43,6 +44,18 @@ out=$(PATH=$GOODPATH ANTHROPIC_API_KEY=x bash "$RUN" --yes 2>&1); rc=$?
 if [ "$rc" -eq 3 ] && [ "$(evals)" -eq 0 ] && printf '%s' "$out" | grep -q 'ANTHROPIC_API_KEY'; then
   pass "2 API key set: exit 3, names variable, no eval"
 else fail "2 API key: rc=$rc evals=$(evals): $out"; fi
+
+# 2b. auth token set
+reset
+out=$(PATH=$GOODPATH ANTHROPIC_AUTH_TOKEN=x bash "$RUN" --yes 2>&1); rc=$?
+if [ "$rc" -eq 3 ] && [ "$(evals)" -eq 0 ] && printf '%s' "$out" | grep -q 'ANTHROPIC_AUTH_TOKEN'; then
+  pass "2b auth token set: exit 3, names variable, no eval"
+else fail "2b auth token: rc=$rc evals=$(evals): $out"; fi
+
+# 2c. graphify present, no claude
+reset
+out=$(PATH="$T/bin-noclaude:$SYSPATH" WARDEN_STUB_EXPECT_GRAPHIFY="$T/bin-noclaude/graphify" bash "$RUN" --yes 2>&1); rc=$?
+[ "$rc" -eq 3 ] && [ "$(evals)" -eq 0 ] && printf '%s' "$out" | grep -q "claude --version" && pass "2c missing claude: exit 3, no eval" || fail "2c missing claude: rc=$rc evals=$(evals): $out"
 
 # 3. answer n -> no eval
 reset
@@ -101,6 +114,20 @@ else fail "7 rc=$rc, record=${rec:-none}: $out"; fi
 reset
 PATH=$GOODPATH bash "$RUN" --yes >/dev/null 2>&1; rc=$?
 [ "$rc" -eq 0 ] && pass "7 all criteria met: exit 0" || fail "7 default canned results should exit 0, got $rc"
+
+# 7b. errored candidate runs fail an at-most case
+reset
+out=$(PATH=$GOODPATH STUB_ERR_6_SETUP_QUICK_QUESTION=2 bash "$RUN" --yes 2>&1); rc=$?
+rec=$(ls "$T/runs"/*.md 2>/dev/null | head -n1)
+if [ "$rc" -eq 1 ] && [ -n "$rec" ] && grep -E '^\| *setup-quick-question \| candidate.*0/5 \(2 errored\).*FAIL' "$rec" >/dev/null \
+   && grep -E 'setup-quick-question / candidate / run 1: errored' "$rec" >/dev/null; then
+  pass "7b errored runs: exit 1, table shows (2 errored) FAIL, run lines say errored"
+else fail "7b rc=$rc: $out"; fi
+
+# 7c. partial result -> exit 2
+reset
+out=$(PATH=$GOODPATH STUB_PARTIAL=1 bash "$RUN" --yes 2>&1); rc=$?
+[ "$rc" -eq 2 ] && pass "7c partial result: exit 2" || fail "7c partial: rc=$rc: $out"
 
 # 8. repo untouched, no scratch left
 STATUS_AFTER=$(git status --porcelain)
