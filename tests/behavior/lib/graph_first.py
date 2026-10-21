@@ -12,7 +12,13 @@ EXPLORE_CMD = re.compile(
 CD_CMD = re.compile(r"^\s*cd(\s+(\S+))?\s*$")
 SPLIT = re.compile(r"(&&|\|\||;|\||\n)")
 OUT = "graphify-out"
-GRAPH_CMD = re.compile(r"^(\w+=\S*\s+)*(\S*/)?graphify\s+(query|explain|path)\b")
+GRAPH_CMD = re.compile(
+    r"^(\w+=\S*\s+)*"
+    r"(?:env\s+(?:\w+=\S*\s+)*|timeout\s+\d+\S*\s+|uvx\s+(?:--from\s+\S+\s+)?"
+    r"|uv\s+tool\s+run\s+(?:--from\s+\S+\s+)?|uv\s+run\s+|pipx\s+run\s+|python3?\s+-m\s+)*"
+    r"(\S*/)?graphifyy?\s+(query|explain|path)\b"
+)
+CONTINUED = re.compile(r"(\|\||&&|\|)[ \t]*\n")
 REDIR = re.compile(r"^(\d*(>>?|<)&?\S*|&>>?\S*)$")
 REDIR_OP = re.compile(r"^(\d*(>>?|<)|&>>?)$")
 VALUE_FLAGS = {
@@ -21,7 +27,7 @@ VALUE_FLAGS = {
     "tail": ("-n", "-c"),
 }
 for _v in ("grep", "egrep", "fgrep", "rg", "git grep"):
-    VALUE_FLAGS[_v] = ("-A", "-B", "-C", "-m", "-e", "-f", "-t", "-g", "--max-count", "--context")
+    VALUE_FLAGS[_v] = ("-A", "-B", "-C", "-m", "-e", "-f", "-t", "-g", "--max-count", "--context", "--regexp", "--file")
 NUMERIC = re.compile(r"^\+?\d+$")
 
 
@@ -55,20 +61,26 @@ def names_out(token):
 
 
 def split_args(rest):
-    """Tokenize, then drop shell redirections (and the target token of a bare operator)."""
+    """Tokenize, then drop shell redirections (judged on the raw, quoted text)."""
     try:
-        args = shlex.split(rest)
+        lex = shlex.shlex(rest, posix=False)
+        lex.whitespace_split = True
+        lex.commenters = ""
+        raw = list(lex)
     except ValueError:
-        args = rest.split()
+        raw = rest.split()
     kept = []
     skip = False
-    for t in args:
+    for t in raw:
         if skip:
             skip = False
         elif REDIR_OP.match(t):
             skip = True
         elif not REDIR.match(t):
-            kept.append(t)
+            try:
+                kept.append(" ".join(shlex.split(t)))
+            except ValueError:
+                kept.append(t)
     return kept
 
 
@@ -83,13 +95,16 @@ def operands(verb, args):
                 break
             roots.append(t)
         return roots
-    plain, skip, has_e = [], False, False
+    plain, skip = [], False
+    has_e = verb == "rg" and "--files" in args  # rg --files takes no pattern
     for t in args:
         if skip:
             skip = False
         elif t in VALUE_FLAGS.get(verb, ()):
             skip = True
-            has_e = has_e or t in ("-e", "-f")
+            has_e = has_e or t in ("-e", "-f", "--regexp", "--file")
+        elif t.startswith(("--regexp=", "--file=")) or re.match(r"^-[ef].", t):
+            has_e = True
         elif not t.startswith("-"):
             plain.append(t)
     if verb in ("head", "tail", "tree"):
@@ -115,7 +130,7 @@ def is_out_check(verb, rest, in_out):
 
 def bash_first(cmd):
     """Return 'graph', 'explore' or None for the first segment that is either."""
-    parts = SPLIT.split(cmd)
+    parts = SPLIT.split(CONTINUED.sub(r"\1", cmd.replace("\\\n", " ")))
     in_out = False  # set by cd graphify-out, for the rest of the command
     clear = False  # the previous segment closed a subshell
     # parts alternate: segment, separator, segment, ...

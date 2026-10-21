@@ -97,6 +97,19 @@ expect 78_awk_src.jsonl 0
 expect 79_subshell_cd_leak.jsonl 0
 expect 80_cd_out_cat_abs_src.jsonl 0
 expect 81_ls_out_then_ls_app.jsonl 0
+expect 82_rg_files_out.jsonl 1
+expect 83_pipe_continued_line.jsonl 1
+expect 84_uvx_graphifyy.jsonl 1
+expect 85_uvx_from.jsonl 1
+expect 86_uv_tool_run.jsonl 1
+expect 87_python_m.jsonl 1
+expect 88_timeout_graphify.jsonl 1
+expect 89_env_graphify.jsonl 1
+expect 90_rg_files_bare.jsonl 0
+expect 91_grep_regexp_eq.jsonl 0
+expect 92_grep_attached_e.jsonl 0
+expect 93_grep_quoted_gt.jsonl 0
+expect 94_echo_mention_then_cat.jsonl 0
 
 python3 -I "$CHECK" "$T/missing.jsonl" >/dev/null 2>&1
 [ $? -eq 2 ] && pass "unreadable file exits 2" || fail "unreadable file should exit 2"
