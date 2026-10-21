@@ -22,6 +22,12 @@ expect 3_only_grep.jsonl 0
 expect 4_report_then_graph.jsonl 1
 expect 5_no_tools.jsonl 0
 expect 6_noise.jsonl 1
+expect 7_cd_grep_then_graph.jsonl 0
+expect 8_gitlsfiles_then_graph.jsonl 0
+expect 9_read_report_then_graph.jsonl 1
+expect 10_graph_pipe_head.jsonl 1
+expect 11_ls_pipe_then_graph.jsonl 0
+expect 12_find_then_graph.jsonl 0
 
 python3 -I "$CHECK" "$T/missing.jsonl" >/dev/null 2>&1
 [ $? -eq 2 ] && pass "unreadable file exits 2" || fail "unreadable file should exit 2"
