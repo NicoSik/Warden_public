@@ -29,13 +29,16 @@ def tool_calls(path):
                     yield block.get("name"), inp if isinstance(inp, dict) else {}
 
 
-def bash_explores(cmd):
+def bash_first(cmd):
+    """Return 'graph', 'explore' or None for the first segment that is either."""
     parts = SPLIT.split(cmd)
     # parts alternate: segment, separator, segment, ...
     for i in range(0, len(parts), 2):
         if i >= 2 and parts[i - 1] == "|":
             continue  # a pipe stage reads stdin; the first command decides
-        seg = parts[i].strip()
+        seg = parts[i].strip().lstrip("(").strip()
+        if GRAPH_CMD.search(seg):
+            return "graph"
         if not EXPLORE_CMD.match(seg):
             continue
         paths = [t for t in seg.split()[1:] if "/" in t]
@@ -43,19 +46,15 @@ def bash_explores(cmd):
             continue
         if not paths and OUT in seg:
             continue
-        return True
-    return False
+        return "explore"
+    return None
 
 
 def classify(name, inp):
     """Return ('graph'|'explore'|None, detail)."""
     if name == "Bash":
         cmd = str(inp.get("command", ""))
-        if GRAPH_CMD.search(cmd):
-            return "graph", cmd
-        if bash_explores(cmd):
-            return "explore", cmd
-        return None, cmd
+        return bash_first(cmd), cmd
     if name in EXPLORE_TOOLS:
         vals = [str(inp.get(k) or "") for k in ("file_path", "path", "pattern")]
         if any(OUT in v for v in vals):
