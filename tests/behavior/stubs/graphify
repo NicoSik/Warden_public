@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Offline stub for graphify. Only answers --version. Refuses anything else.
+if [ "$0" != "${WARDEN_STUB_EXPECT_GRAPHIFY:-}" ]; then
+  echo "graphify stub: called as '$0', expected '${WARDEN_STUB_EXPECT_GRAPHIFY:-unset}'" >&2
+  exit 99
+fi
+if [ "${1:-}" = "--version" ]; then
+  echo "graphify 9.9.9-stub"
+  exit 0
+fi
+echo "graphify stub: unexpected args: $*" >&2
+exit 99

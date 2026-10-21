@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Offline stub for claude. Handles --version and `plugin eval`; records argv.
+# Refuses (exit 99) unless called through the path the test expects.
+if [ "$0" != "${WARDEN_STUB_EXPECT_CLAUDE:-}" ]; then
+  echo "claude stub: called as '$0', expected '${WARDEN_STUB_EXPECT_CLAUDE:-unset}'" >&2
+  exit 99
+fi
+LOG="${WARDEN_STUB_LOG:?}"
+if [ "${1:-}" = "--version" ]; then
+  echo "CALL version" >> "$LOG"
+  echo "2.1.305 (Claude Code)"
+  exit 0
+fi
+if [ "${1:-}" = "plugin" ] && [ "${2:-}" = "eval" ]; then
+  echo "CALL eval $*" >> "$LOG"
+  CNT="$LOG.count"
+  n=$(cat "$CNT" 2>/dev/null || echo 0)
+  n=$((n + 1))
+  echo "$n" > "$CNT"
+  export STUB_CALL_NO="$n"
+  json="" runs=1 cases=""
+  shift 2
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json="$2"; shift ;;
+      --runs) runs="$2"; shift ;;
+      --case) cases="$cases $2"; shift ;;
+    esac
+    shift
+  done
+  [ -n "$json" ] || { echo "claude stub: no --json" >&2; exit 99; }
+  STUB_RUNS="$runs" STUB_CASES="$cases" STUB_JSON="$json" python3 -I - <<'PY'
+import json, os, tempfile
+n = os.environ["STUB_CALL_NO"]
+runs = int(os.environ["STUB_RUNS"])
+base = os.environ.get("STUB_TMP") or os.environ.get("TMPDIR") or "/tmp"
+cases = []
+for name in os.environ["STUB_CASES"].split():
+    key = name.upper().replace("-", "_")
+    default = 0 if name in ("setup-quick-question", "setup-non-coding") else runs
+    k = int(os.environ.get("STUB_TRIG_%s_%s" % (n, key), default))
+    out = []
+    for i in range(runs):
+        trig = i < k
+        d = tempfile.mkdtemp(prefix="e-", dir=base)
+        os.makedirs(os.path.join(d, "out"))
+        tp = os.path.join(d, "out", "trace.jsonl")
+        cmd = "graphify query x" if trig else "cat a.ts"
+        lines = [{"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": cmd}}]}}]
+        if name == "read-order" and not trig:
+            lines = [{"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Read", "input": {"file_path": "a.ts"}}]}}] + lines
+        with open(tp, "w") as f:
+            for l in lines:
+                f.write(json.dumps(l) + "\n")
+        if name == "read-order":
+            graders = [{"name": "bash-used", "passed": True, "explanation": "", "weight": 1, "withOnly": False, "scored": True}]
+        else:
+            passed = trig if name == "setup-planning" else (not trig)
+            graders = [{"name": "triggered", "passed": passed, "explanation": "", "weight": 1, "withOnly": False, "scored": True}]
+        out.append({"score": 1.0, "passed": True, "turns": 3, "costUsd": 0.05,
+                    "error": None, "tracePath": tp, "graders": graders})
+    cases.append({"name": name, "dir": "x", "arms": {"with": out}, "aggregates": {}})
+res = {"schemaVersion": 1, "claudeVersion": "2.1.305", "startedAt": "2026-10-21T00:00:00Z",
+       "durationSeconds": 1, "costUsd": 0.05 * runs * len(cases), "partial": os.environ.get("STUB_PARTIAL") == "1",
+       "suite": {"ablation": "none", "modelOverride": None, "plugins": []},
+       "cases": cases, "aggregates": {}}
+with open(os.environ["STUB_JSON"], "w") as f:
+    json.dump(res, f)
+PY
+  exit 1
+fi
+echo "claude stub: unexpected args: $*" >&2
+exit 99
