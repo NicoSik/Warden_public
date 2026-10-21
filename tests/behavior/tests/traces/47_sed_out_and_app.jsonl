@@ -1,0 +1,2 @@
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"sed -n 1,5p graphify-out/GRAPH_REPORT.md app.ts","description":"d"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"graphify query \"x\"","description":"d"}}]}}
