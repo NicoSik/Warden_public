@@ -43,6 +43,7 @@ for name in os.environ["STUB_CASES"].split():
     for i in range(runs):
         trig = i < k
         d = tempfile.mkdtemp(prefix="e-", dir=base)
+        sealed = os.path.join(d, "sealed"); os.makedirs(os.path.join(sealed, "inner")); os.chmod(sealed, 0)  # real plugin eval leaves mode-000 dirs
         os.makedirs(os.path.join(d, "out"))
         tp = os.path.join(d, "out", "trace.jsonl")
         cmd = "graphify query x" if trig else "cat a.ts"

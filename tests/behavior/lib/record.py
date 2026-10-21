@@ -49,6 +49,18 @@ def graph_first(trace):
     return val, first
 
 
+def remove_tree(d):
+    """Delete an eval temp dir. Plugin eval leaves some subdirs at mode 000,
+    which rmtree cannot enter, so give the owner access back first."""
+    for root, dirs, _files in os.walk(d, topdown=True, onerror=lambda e: None):
+        for name in dirs:
+            try:
+                os.chmod(os.path.join(root, name), 0o700)
+            except OSError:
+                pass
+    shutil.rmtree(d, ignore_errors=True)
+
+
 def cleanup(results):
     for res in results.values():
         for c in res.get("cases", []):
@@ -59,7 +71,7 @@ def cleanup(results):
                         continue
                     d = os.path.dirname(os.path.dirname(tp))
                     if os.path.basename(d).startswith("e-") and os.path.isdir(d):
-                        shutil.rmtree(d, ignore_errors=True)
+                        remove_tree(d)
 
 
 def grade_run(case, rule, run):
