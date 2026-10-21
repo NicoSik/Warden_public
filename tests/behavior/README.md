@@ -6,13 +6,24 @@ A rerunnable behavior test for the vendored Superpowers plugin (`plugins/superpo
 ## Run it
 
 ```
-tests/behavior/run-behavior [--case <name>|all] [--runs N] [--model ID] [--yes]
+tests/behavior/run-behavior [--case <name>|all] [--runs N] [--model ID] [--arms FILE] [--record-dir DIR] [--yes]
 ```
 
 - `--case` picks one case from `evals/arms.conf`. The default is `all`.
 - `--runs` sets runs per case and arm. The default is 5. The success counts in `arms.conf` assume 5.
 - `--model` pins a model. Without it the run uses your account default.
+- `--arms` sets the arms file. The default is `evals/arms.conf`. A missing file exits 2 with
+  `arms file not found: FILE`.
+- `--record-dir` sets the record folder. The precedence is the flag, then
+  `WARDEN_BEHAVIOR_RECORD_DIR`, then the default folder below.
 - `--yes` skips the confirmation. Only the offline test uses it.
+
+A baseline of `-` in an arms row means candidate only. The wrapper resolves no baseline, runs and
+counts one arm for that row, and the record has no baseline row for it.
+
+Cases whose name starts with `read-order` (including `read-order-heldout`) are graded by
+`lib/graph_first.py`. After grading, the run prints the first 5 tool calls of every such run to the
+terminal under `first commands: <case> / <arm> / run <i>`. This text never goes into the record.
 
 Each arm comes from `git archive <ref> plugins/superpowers` into a scratch directory. The run never
 checks out a ref and never touches your project, your `~/.claude`, or the git state of this repo.

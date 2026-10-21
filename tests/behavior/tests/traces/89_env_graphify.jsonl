@@ -1,0 +1,1 @@
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"env GRAPHIFY_X=1 graphify query \"x\"","description":"d"}}]}}

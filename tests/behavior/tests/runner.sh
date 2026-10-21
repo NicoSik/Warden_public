@@ -31,6 +31,7 @@ reset() { : > "$WARDEN_STUB_LOG"; rm -f "$WARDEN_STUB_LOG.count"; rm -rf "$T/run
 evals() { grep -c '^CALL eval' "$WARDEN_STUB_LOG"; }
 
 cd "$HERE/../../.." || exit 1
+rm -rf tests/behavior/lib/__pycache__
 STATUS_BEFORE=$(git status --porcelain)
 
 # 1. no graphify -> exit 3, no eval
@@ -135,10 +136,73 @@ reset
 out=$(PATH=$GOODPATH STUB_PARTIAL=1 bash "$RUN" --yes 2>&1); rc=$?
 [ "$rc" -eq 2 ] && pass "7c partial result: exit 2" || fail "7c partial: rc=$rc: $out"
 
+# 9. --arms and --record-dir
+reset
+printf 'read-order c91be4c 7d972fa at-least 4\n' > "$T/arms9.conf"
+out=$(PATH=$GOODPATH bash "$RUN" --yes --arms "$T/arms9.conf" --record-dir "$T/other" 2>&1); rc=$?
+if [ "$(evals)" -eq 2 ] && [ -n "$(ls "$T/other"/*.md 2>/dev/null)" ] && [ -z "$(ls "$T/runs"/*.md 2>/dev/null)" ]; then
+  pass "9 --arms and --record-dir: 2 evals, record in the flag folder only"
+else fail "9 rc=$rc evals=$(evals): $out"; fi
+rm -rf "$T/other"
+
+# 10. candidate only: agent count, one eval, no baseline row, no '-' pin
+reset
+printf 'read-order - 7d972fa at-least 4\n' > "$T/arms10.conf"
+out=$(printf 'n\n' | PATH=$GOODPATH bash "$RUN" --arms "$T/arms10.conf" 2>&1); rc=$?
+case "$out" in
+  *"Start 5 agents? [y/N]"*) pass "10 candidate-only prompt names 5 agents" ;;
+  *) fail "10 prompt 'Start 5 agents? [y/N]' missing: $out" ;;
+esac
+reset
+out=$(PATH=$GOODPATH bash "$RUN" --yes --arms "$T/arms10.conf" 2>&1); rc=$?
+rec=$(ls "$T/runs"/*.md 2>/dev/null | head -n1)
+if [ "$(evals)" -eq 1 ] && [ -n "$rec" ] && grep -qF '| read-order | candidate |' "$rec" \
+   && ! grep -qF '| read-order | baseline |' "$rec" && ! grep -qF ' - (' "$rec"; then
+  pass "10 candidate only: 1 eval, candidate row only, no '-' pin"
+else fail "10 rc=$rc evals=$(evals): $out"; fi
+
+# 11. held-out grading
+reset
+printf 'read-order-heldout - 7d972fa at-least 4\n' > "$T/arms11.conf"
+out11=$(PATH=$GOODPATH STUB_TRIG_1_READ_ORDER_HELDOUT=2 bash "$RUN" --yes --arms "$T/arms11.conf" 2>&1); rc=$?
+rec=$(ls "$T/runs"/*.md 2>/dev/null | head -n1)
+if [ "$rc" -eq 1 ] && [ -n "$rec" ] && grep -E '^\| read-order-heldout .*2/5.*graph-first >= 4.*FAIL' "$rec" >/dev/null \
+   && grep -qF 'graph_first=' "$rec"; then
+  pass "11 held-out graded by graph_first: exit 1, 2/5, FAIL"
+else fail "11 rc=$rc: $out11"; fi
+
+# 12. first commands on the terminal only
+if printf '%s' "$out11" | grep -qF 'first commands: read-order-heldout / candidate / run 1' \
+   && printf '%s' "$out11" | grep -qF 'Bash: graphify query x' \
+   && [ -n "$rec" ] && ! grep -qF -e 'graphify query x' -e 'a.ts' "$rec"; then
+  pass "12 first commands printed to the terminal, not the record"
+else fail "12 first-commands print wrong: $out11"; fi
+
+# 13. missing arms file
+reset
+out=$(PATH=$GOODPATH bash "$RUN" --yes --arms "$T/nope.conf" 2>&1); rc=$?
+if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -qF 'arms file not found' && [ "$(evals)" -eq 0 ]; then
+  pass "13 missing arms file: exit 2, no eval"
+else fail "13 rc=$rc evals=$(evals): $out"; fi
+
 # 8. repo untouched, no scratch left
 STATUS_AFTER=$(git status --porcelain)
 [ "$STATUS_BEFORE" = "$STATUS_AFTER" ] && pass "8 git status unchanged" || fail "8 git status changed"
 left=$(ls -A "$T/tmp")
 [ -z "$left" ] && pass "8 no scratch dir left" || fail "8 scratch left: $left"
+
+# 14. no bytecode left beside the grader. record.py loads graph_first.py with importlib;
+# the default python3 (not /usr/bin/python3, which never writes bytecode) must not leave __pycache__.
+rm -rf tests/behavior/lib/__pycache__
+mkdir -p "$T/r14"
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}' > "$T/r14/trace.jsonl"
+SHA14=$(git rev-parse HEAD)
+printf 'read-order - %s at-least 1\n' "$SHA14" > "$T/r14/conf"
+printf '{"claudeVersion":"x","cases":[{"name":"read-order","arms":{"with":[{"tracePath":"%s"}]}}]}' "$T/r14/trace.jsonl" > "$T/r14/result.json"
+python3 -I tests/behavior/lib/record.py --conf "$T/r14/conf" --out-dir "$T/r14/out" --runs 1 --graphify-version x \
+  --fixture-hash y --id t14 --result "$SHA14=$T/r14/result.json" >/dev/null 2>&1
+if [ -e tests/behavior/lib/__pycache__ ]; then
+  fail "14 record.py left tests/behavior/lib/__pycache__"; rm -rf tests/behavior/lib/__pycache__
+else pass "14 no bytecode left in tests/behavior/lib"; fi
 
 [ "$FAILURES" -eq 0 ]
