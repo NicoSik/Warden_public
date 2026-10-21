@@ -24,7 +24,7 @@ if [ "${1:-}" = "plugin" ] && [ "${2:-}" = "eval" ]; then
     case "$1" in
       --json) json="$2"; shift ;;
       --runs) runs="$2"; shift ;;
-      --case) cases="$cases $2"; shift ;;
+      --case) cases="$2"; shift ;;  # real plugin eval keeps only the last --case
     esac
     shift
   done

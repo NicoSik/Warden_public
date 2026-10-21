@@ -60,20 +60,21 @@ case "$out" in
   *) fail "4 prompt 'Start 40 agents? [y/N]' missing" ;;
 esac
 
-# 5. --yes --runs 2: one eval per distinct arm ref, right flags, no --model
+# 5. --yes --runs 2: one eval per (arm ref, case) pair with exactly one --case, right flags, no --model
 reset
 out=$(PATH=$GOODPATH bash "$RUN" --yes --runs 2 2>&1); rc5=$?
 ok=1
-[ "$(evals)" -eq 3 ] || ok=0
+[ "$(evals)" -eq 8 ] || ok=0
 while IFS= read -r line; do
   for f in '--no-publish' '--ablation none' '--scaffold' '--keep-temp' '--eval-dir warden-evals' '--runs 2' '--trust-plugin' '--allow-tools Bash'; do
     case "$line" in *"$f"*) ;; *) ok=0 ;; esac
   done
   case "$line" in *"--model"*) ok=0 ;; esac
+  [ "$(printf '%s\n' "$line" | grep -o -- '--case ' | wc -l | tr -d ' ')" -eq 1 ] || ok=0
 done <<EOF2
 $(grep '^CALL eval' "$WARDEN_STUB_LOG")
 EOF2
-[ "$ok" -eq 1 ] && pass "5 one eval per arm ref with the pinned flags, no --model" || fail "5 eval calls wrong (rc=$rc5): $(cat "$WARDEN_STUB_LOG")"
+[ "$ok" -eq 1 ] && pass "5 one eval per (ref, case) with one --case, the pinned flags, no --model" || fail "5 eval calls wrong (rc=$rc5): $(cat "$WARDEN_STUB_LOG")"
 
 # 6. record
 rec=$(ls "$T/runs"/*.md 2>/dev/null | head -n1)
@@ -90,9 +91,9 @@ if [ -n "$rec" ]; then
   else pass "6 record has no machine path"; fi
 else fail "6 no record written (rc=$rc5): $out"; fi
 
-# 7. candidate planning 3 of 5 -> exit 1, FAIL in table (call 2 is the candidate ref of the setup cases)
+# 7. candidate planning 3 of 5 -> exit 1, FAIL in table (call 5 is the candidate ref's setup-planning call: c91be4c runs 4 cases first)
 reset
-out=$(PATH=$GOODPATH STUB_TRIG_2_SETUP_PLANNING=3 bash "$RUN" --yes 2>&1); rc=$?
+out=$(PATH=$GOODPATH STUB_TRIG_5_SETUP_PLANNING=3 bash "$RUN" --yes 2>&1); rc=$?
 rec=$(ls "$T/runs"/*.md 2>/dev/null | head -n1)
 if [ "$rc" -eq 1 ] && [ -n "$rec" ] && grep -E '^\| *setup-planning.*FAIL' "$rec" >/dev/null; then
   pass "7 planning 3/5: exit 1 and table shows FAIL"

@@ -93,18 +93,36 @@ for sha in $REFS; do
   mkdir -p "$dest"
   cp -R "$EVALS/." "$dest/"
   rm -f "$dest/arms.conf"
-  case_args=()
-  for c in $(awk -v s="$sha" '$2==s || $3==s {print $1}' "$WORK/conf" | awk '!seen[$0]++'); do
-    case_args+=(--case "$c")
-  done
   res="$WORK/result-$n.json"
   model_args=()
   [ -n "$MODEL" ] && model_args=(--model "$MODEL")
-  echo "Evaluating $(printf '%s' "$sha" | cut -c1-7) ..."
-  ( cd "$scratch" && claude plugin eval "$scratch/plugins/superpowers" \
-      --no-publish --ablation none --scaffold --trust-plugin --keep-temp \
-      --eval-dir warden-evals --json "$res" --allow-tools Bash --runs "$RUNS" \
-      ${model_args[@]+"${model_args[@]}"} "${case_args[@]}" >"$WORK/eval-$n.log" 2>&1 )
+  # plugin eval honours only the last --case, so run one eval per case and merge.
+  parts=()
+  k=0
+  for c in $(awk -v s="$sha" '$2==s || $3==s {print $1}' "$WORK/conf" | awk '!seen[$0]++'); do
+    k=$((k + 1))
+    part="$WORK/result-$n-$k.json"
+    echo "Evaluating $(printf '%s' "$sha" | cut -c1-7) $c ..."
+    ( cd "$scratch" && claude plugin eval "$scratch/plugins/superpowers" \
+        --no-publish --ablation none --scaffold --trust-plugin --keep-temp \
+        --eval-dir warden-evals --json "$part" --allow-tools Bash --runs "$RUNS" \
+        ${model_args[@]+"${model_args[@]}"} --case "$c" >"$WORK/eval-$n-$k.log" 2>&1 )
+    parts+=("$part")
+  done
+  python3 -I - "$res" "${parts[@]}" <<'PY' || { echo "error: could not merge eval results for $sha" >&2; exit 2; }
+import json, sys
+out, parts = sys.argv[1], sys.argv[2:]
+merged = None
+for p in parts:
+    d = json.load(open(p))
+    if merged is None:
+        merged = d
+        continue
+    merged["cases"] += d.get("cases", [])
+    merged["costUsd"] = (merged.get("costUsd") or 0) + (d.get("costUsd") or 0)
+    merged["partial"] = bool(merged.get("partial")) or bool(d.get("partial"))
+json.dump(merged, open(out, "w"))
+PY
   RESULT_ARGS+=(--result "$sha=$res")
 done
 
@@ -116,6 +134,6 @@ rc=$?
 
 # Keep the raw results outside the repo.
 if [ "$rc" -le 1 ]; then
-  mkdir -p "$RAW_BASE/$ID" && cp "$WORK"/result-*.json "$RAW_BASE/$ID/" 2>/dev/null || true
+  mkdir -p "$RAW_BASE/$ID" && cp "$WORK"/result-[0-9].json "$WORK"/result-[0-9][0-9].json "$RAW_BASE/$ID/" 2>/dev/null || true
 fi
 exit "$rc"
