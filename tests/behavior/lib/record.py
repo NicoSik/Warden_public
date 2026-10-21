@@ -4,11 +4,12 @@
 Usage: record.py --conf FILE --out-dir DIR --runs N --graphify-version V
                  --fixture-hash H --id ID --result SHA=FILE [--result ...]
 
-FILE lines of --conf: <case> <baseline-sha> <candidate-sha> <at-least|at-most> <count>.
+FILE lines of --conf: <case> <baseline-sha or -> <candidate-sha> <at-least|at-most> <count>.
 Exit: 0 all criteria met, 1 a candidate criterion failed, 2 bad or partial result.
 """
 import argparse
 import datetime
+import importlib.util
 import json
 import os
 import re
@@ -51,6 +52,20 @@ def graph_first(trace):
     return val, first
 
 
+def first_commands(trace, limit=5):
+    """Return the first tool calls of a trace as display lines. Terminal only, never recorded."""
+    spec = importlib.util.spec_from_file_location("graph_first", GRAPH_FIRST)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    lines = []
+    for name, inp in mod.tool_calls(trace):
+        if len(lines) >= limit:
+            break
+        val = inp.get("command") or inp.get("file_path") or inp.get("path") or inp.get("pattern") or ""
+        lines.append(("  %s: %s" % (name, " ".join(str(val).split())))[:160])
+    return lines
+
+
 def remove_tree(d):
     """Delete an eval temp dir. Plugin eval leaves some subdirs at mode 000,
     and the run dir itself read-only, so give the owner access back first."""
@@ -84,7 +99,7 @@ def grade_run(case, rule, run):
     """Return (hit, detail). hit is True/False, or None for an errored run (counted in neither direction)."""
     if run.get("error"):
         return None, "errored (%s)" % redact(run.get("error"))
-    if case == "read-order":
+    if case.startswith("read-order"):
         val, first = graph_first(run.get("tracePath"))
         if val is None:
             return None, "errored (graph_first unavailable: %s)" % first
@@ -140,15 +155,17 @@ def main():
         shas = []
         for case, base, cand, rule, count in conf:
             for s in (base, cand):
-                if s not in shas:
+                if s != "-" and s not in shas:
                     shas.append(s)
 
         rows = []
         run_lines = []
+        terminal = []
         total_cost = 0.0
         failed = False
         for case, base, cand, rule, count in conf:
-            for arm, sha in (("baseline", base), ("candidate", cand)):
+            arms = (("candidate", cand),) if base == "-" else (("baseline", base), ("candidate", cand))
+            for arm, sha in arms:
                 item = None
                 for c in results[sha]["cases"]:
                     if c.get("name") == case:
@@ -161,6 +178,11 @@ def main():
                 errored = 0
                 for i, r in enumerate(runs, 1):
                     hit, detail = grade_run(case, rule, r)
+                    if case.startswith("read-order"):
+                        terminal.append("first commands: %s / %s / run %d" % (case, arm, i))
+                        tp = r.get("tracePath")
+                        if tp and os.path.isfile(tp):
+                            terminal.extend(first_commands(tp))
                     if hit is None:
                         errored += 1
                     elif hit:
@@ -170,7 +192,7 @@ def main():
                     run_lines.append("- %s / %s / run %d: %s; score %s; passed %s; turns %s; cost $%.4f%s" % (
                         case, arm, i, detail, r.get("score"), r.get("passed"), r.get("turns"), cost,
                         "; error: %s" % redact(r.get("error")) if r.get("error") else ""))
-                what = "graph-first" if case == "read-order" else "triggered"
+                what = "graph-first" if case.startswith("read-order") else "triggered"
                 op = ">=" if rule == "at-least" else "<="
                 if arm == "candidate":
                     ok = hits >= int(count) if rule == "at-least" else hits <= int(count)
@@ -232,6 +254,8 @@ def main():
             f.write(text)
         print("\n".join(out[out.index("| case | arm | SHA | count/runs | criterion | result |"):out.index("## Runs") - 1]))
         print("record: " + path)
+        if terminal:
+            print("\n".join(terminal))
         return 1 if failed else 0
     finally:
         cleanup(results)
