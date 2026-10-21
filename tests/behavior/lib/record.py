@@ -11,6 +11,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -24,11 +25,12 @@ ATTEMPTS = ("Runs measure attempts. Inside the eval sandbox on macOS, git, the h
             "`graphify query` fail inside a run.")
 
 
-def tilde(path):
-    home = os.environ.get("HOME", "")
-    if home and (path == home or path.startswith(home.rstrip("/") + "/")):
-        return "~" + path[len(home.rstrip("/")):]
-    return None
+PATH_RE = re.compile(r"(?:~|(?<![\w.~]))/[^\s()]+")
+
+
+def redact(text):
+    """Replace absolute and home paths, since run records go into a public repo."""
+    return PATH_RE.sub("<path>", str(text))
 
 
 def graph_first(trace):
@@ -45,7 +47,7 @@ def graph_first(trace):
         if ln.startswith("graph_first="):
             val = int(ln.split("=", 1)[1])
         elif ln.startswith("first="):
-            first = ln.split("=", 1)[1]
+            first = ln.split("=", 1)[1].split(":", 1)[0]  # tool name only: the input is transcript text
     return val, first
 
 
@@ -81,7 +83,7 @@ def cleanup(results):
 def grade_run(case, rule, run):
     """Return (hit, detail). hit is True/False, or None for an errored run (counted in neither direction)."""
     if run.get("error"):
-        return None, "errored (%s)" % run.get("error")
+        return None, "errored (%s)" % redact(run.get("error"))
     if case == "read-order":
         val, first = graph_first(run.get("tracePath"))
         if val is None:
@@ -167,7 +169,7 @@ def main():
                     total_cost += cost
                     run_lines.append("- %s / %s / run %d: %s; score %s; passed %s; turns %s; cost $%.4f%s" % (
                         case, arm, i, detail, r.get("score"), r.get("passed"), r.get("turns"), cost,
-                        "; error: %s" % r.get("error") if r.get("error") else ""))
+                        "; error: %s" % redact(r.get("error")) if r.get("error") else ""))
                 what = "graph-first" if case == "read-order" else "triggered"
                 op = ">=" if rule == "at-least" else "<="
                 if arm == "candidate":
@@ -219,9 +221,8 @@ def main():
         out.append("")
         out.append("US$%.2f (%s)" % (total_cost, LABEL))
         if a.raw_dir:
-            t = tilde(a.raw_dir)
             out.append("")
-            out.append("Raw result JSON is kept outside the repository%s." % (" in " + t if t else ""))
+            out.append("Raw result JSON is kept outside the repository.")
         out.append("")
         text = "\n".join(out)
 

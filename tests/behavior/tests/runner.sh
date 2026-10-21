@@ -9,7 +9,7 @@ STUBS="$HERE/../stubs"
 
 T=$(mktemp -d "${TMPDIR:-/tmp}/warden-runner-test.XXXXXX")
 trap 'rm -rf "$T"' EXIT
-mkdir -p "$T/home" "$T/tmp" "$T/bin" "$T/bin-nographify" "$T/bin-noclaude" "$T/runs" "$T/raw"
+mkdir -p "$T/home" "$T/tmp" "$T/bin" "$T/bin-nographify" "$T/bin-noclaude" "$T/runs"
 ln -s "$STUBS/claude" "$T/bin/claude"
 ln -s "$STUBS/graphify" "$T/bin/graphify"
 ln -s "$STUBS/claude" "$T/bin-nographify/claude"
@@ -20,14 +20,14 @@ export WARDEN_STUB_LOG="$T/stub.log"
 export WARDEN_STUB_EXPECT_CLAUDE="$T/bin/claude"
 export WARDEN_STUB_EXPECT_GRAPHIFY="$T/bin/graphify"
 export WARDEN_BEHAVIOR_RECORD_DIR="$T/runs"
-export WARDEN_BEHAVIOR_RAW_DIR="$T/raw"
+export WARDEN_BEHAVIOR_RAW_DIR="$HOME/raw"; mkdir -p "$WARDEN_BEHAVIOR_RAW_DIR"
 unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
 SYSPATH="/usr/bin:/bin:/usr/sbin:/sbin"
 GOODPATH="$T/bin:$SYSPATH"
 
 [ "$(PATH=$GOODPATH command -v claude)" = "$T/bin/claude" ] || { echo "stub not first on PATH"; exit 1; }
 
-reset() { : > "$WARDEN_STUB_LOG"; rm -f "$WARDEN_STUB_LOG.count"; rm -rf "$T/runs" "$T/raw"; mkdir -p "$T/runs" "$T/raw"; }
+reset() { : > "$WARDEN_STUB_LOG"; rm -f "$WARDEN_STUB_LOG.count"; rm -rf "$T/runs" "$WARDEN_BEHAVIOR_RAW_DIR"; mkdir -p "$T/runs" "$WARDEN_BEHAVIOR_RAW_DIR"; }
 evals() { grep -c '^CALL eval' "$WARDEN_STUB_LOG"; }
 
 cd "$HERE/../../.." || exit 1
@@ -99,9 +99,14 @@ if [ -n "$rec" ]; then
   done
   grep -qF 'list-price estimate' "$rec" || { ok=0; echo "    missing cost label"; }
   [ "$ok" -eq 1 ] && pass "6 record holds the five pins and the attempts statement" || fail "6 record incomplete"
-  if grep -I -E '/(Users|home)/[A-Za-z0-9._-]+' "$rec" >/dev/null; then
-    fail "6 record holds a machine path"
+  if grep -I -E '~/|/(Users|home|private|tmp|var)/' "$rec" >/dev/null; then
+    fail "6 record holds a machine path: $(grep -I -E '~/|/(Users|home|private|tmp|var)/' "$rec" | head -n1)"
   else pass "6 record has no machine path"; fi
+  if grep -F -e 'graphify query x' -e 'a.ts' "$rec" >/dev/null; then
+    fail "6 record holds transcript text: $(grep -F -e 'graphify query x' -e 'a.ts' "$rec" | head -n1)"
+  elif grep -E '^- read-order / candidate / run 1: graph_first=1 first=Bash;' "$rec" >/dev/null; then
+    pass "6 record names the first tool, not its input"
+  else fail "6 read-order run line lacks first=<tool>"; fi
 else fail "6 no record written (rc=$rc5): $out"; fi
 
 # 7. candidate planning 3 of 5 -> exit 1, FAIL in table (call 5 is the candidate ref's setup-planning call: c91be4c runs 4 cases first)
@@ -117,11 +122,12 @@ PATH=$GOODPATH bash "$RUN" --yes >/dev/null 2>&1; rc=$?
 
 # 7b. errored candidate runs fail an at-most case
 reset
-out=$(PATH=$GOODPATH STUB_ERR_6_SETUP_QUICK_QUESTION=2 bash "$RUN" --yes 2>&1); rc=$?
+out=$(PATH=$GOODPATH STUB_ERR_6_SETUP_QUICK_QUESTION=2 STUB_ERR_TEXT="lost /private/tmp/e-Ab12/out" bash "$RUN" --yes 2>&1); rc=$?
 rec=$(ls "$T/runs"/*.md 2>/dev/null | head -n1)
 if [ "$rc" -eq 1 ] && [ -n "$rec" ] && grep -E '^\| *setup-quick-question \| candidate.*0/5 \(2 errored\).*FAIL' "$rec" >/dev/null \
-   && grep -E 'setup-quick-question / candidate / run 1: errored' "$rec" >/dev/null; then
-  pass "7b errored runs: exit 1, table shows (2 errored) FAIL, run lines say errored"
+   && grep -E 'setup-quick-question / candidate / run 1: errored \(lost <path>\)' "$rec" >/dev/null \
+   && ! grep -F '/private/' "$rec" >/dev/null; then
+  pass "7b errored runs: exit 1, table shows (2 errored) FAIL, run lines say errored, paths redacted"
 else fail "7b rc=$rc: $out"; fi
 
 # 7c. partial result -> exit 2
