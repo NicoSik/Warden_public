@@ -55,6 +55,7 @@ for name in os.environ["STUB_CASES"].split():
         with open(tp, "w") as f:
             for l in lines:
                 f.write(json.dumps(l) + "\n")
+        os.chmod(d, 0o500)  # real plugin eval leaves the run dir itself read-only
         if name == "read-order":
             graders = [{"name": "bash-used", "passed": True, "explanation": "", "weight": 1, "withOnly": False, "scored": True}]
         else:

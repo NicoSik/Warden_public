@@ -51,7 +51,11 @@ def graph_first(trace):
 
 def remove_tree(d):
     """Delete an eval temp dir. Plugin eval leaves some subdirs at mode 000,
-    which rmtree cannot enter, so give the owner access back first."""
+    and the run dir itself read-only, so give the owner access back first."""
+    try:
+        os.chmod(d, 0o700)
+    except OSError:
+        pass
     for root, dirs, _files in os.walk(d, topdown=True, onerror=lambda e: None):
         for name in dirs:
             try:
