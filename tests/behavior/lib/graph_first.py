@@ -18,7 +18,6 @@ GRAPH_CMD = re.compile(
     r"|uv\s+tool\s+run\s+(?:--from\s+\S+\s+)?|uv\s+run\s+|pipx\s+run\s+|python3?\s+-m\s+)*"
     r"(\S*/)?graphifyy?\s+(query|explain|path)\b"
 )
-CONTINUED = re.compile(r"(\|\||&&|\|)[ \t]*\n")
 REDIR = re.compile(r"^(\d*(>>?|<)&?\S*|&>>?\S*)$")
 REDIR_OP = re.compile(r"^(\d*(>>?|<)|&>>?)$")
 VALUE_FLAGS = {
@@ -60,27 +59,70 @@ def names_out(token):
     return token in (OUT, "./" + OUT) or token.startswith((OUT + "/", "./" + OUT + "/"))
 
 
+def posix_tokens(rest):
+    """Split like POSIX shlex. Return (raw, value) pairs; raise ValueError if a quote is open."""
+    out = []
+    raw, val, active = "", "", False
+    quote = None
+    i = 0
+    while i < len(rest):
+        c = rest[i]
+        if quote == "'":
+            raw += c
+            if c == "'":
+                quote = None
+            else:
+                val += c
+        elif quote == '"':
+            raw += c
+            if c == '"':
+                quote = None
+            elif c == "\\" and i + 1 < len(rest) and rest[i + 1] in '\\"$`':
+                i += 1
+                raw += rest[i]
+                val += rest[i]
+            else:
+                val += c
+        elif c.isspace():
+            if active:
+                out.append((raw, val))
+            raw, val, active = "", "", False
+        else:
+            active = True
+            raw += c
+            if c in "'\"":
+                quote = c
+            elif c == "\\" and i + 1 < len(rest):
+                i += 1
+                raw += rest[i]
+                val += rest[i]
+            else:
+                val += c
+        i += 1
+    if quote:
+        raise ValueError("unterminated quote")
+    if active:
+        out.append((raw, val))
+    return out
+
+
 def split_args(rest):
-    """Tokenize, then drop shell redirections (judged on the raw, quoted text)."""
+    """Tokenize like POSIX shlex, then drop redirections (judged on the raw text)."""
     try:
-        lex = shlex.shlex(rest, posix=False)
-        lex.whitespace_split = True
-        lex.commenters = ""
-        raw = list(lex)
+        toks = posix_tokens(rest)
     except ValueError:
-        raw = rest.split()
+        toks = [(t, t) for t in rest.split()]
     kept = []
     skip = False
-    for t in raw:
+    for raw, val in toks:
         if skip:
             skip = False
-        elif REDIR_OP.match(t):
+        elif raw[0] in "'\"":
+            kept.append(val)  # a quoted word is always an operand
+        elif REDIR_OP.match(raw):
             skip = True
-        elif not REDIR.match(t):
-            try:
-                kept.append(" ".join(shlex.split(t)))
-            except ValueError:
-                kept.append(t)
+        elif not REDIR.match(raw):
+            kept.append(val)
     return kept
 
 
@@ -128,9 +170,25 @@ def is_out_check(verb, rest, in_out):
     return bool(paths) and all(names_out(t) for t in paths)
 
 
+def join_lines(cmd):
+    """Join continued lines; a comment line never continues."""
+    out = ""
+    for line in cmd.split("\n"):
+        body = line.rstrip()
+        if line.lstrip().startswith("#"):
+            out += line + "\n"
+        elif body.endswith("\\"):
+            out += body[:-1] + " "
+        elif body.endswith(("|", "&&")):
+            out += body
+        else:
+            out += line + "\n"
+    return out
+
+
 def bash_first(cmd):
     """Return 'graph', 'explore' or None for the first segment that is either."""
-    parts = SPLIT.split(CONTINUED.sub(r"\1", cmd.replace("\\\n", " ")))
+    parts = SPLIT.split(join_lines(cmd))
     in_out = False  # set by cd graphify-out, for the rest of the command
     clear = False  # the previous segment closed a subshell
     # parts alternate: segment, separator, segment, ...

@@ -110,6 +110,16 @@ expect 91_grep_regexp_eq.jsonl 0
 expect 92_grep_attached_e.jsonl 0
 expect 93_grep_quoted_gt.jsonl 0
 expect 94_echo_mention_then_cat.jsonl 0
+expect 95_grep_escaped_quote_label.jsonl 1
+expect 96_grep_escaped_quote_id.jsonl 1
+expect 97_cat_inner_quoted.jsonl 1
+expect 98_cat_escaped_space.jsonl 1
+expect 99_grep_regexp_quoted_value.jsonl 1
+expect 100_grep_e_quoted_value.jsonl 1
+expect 101_ls_redirect_space.jsonl 1
+expect 102_comment_pipe_no_continue.jsonl 0
+expect 103_grep_regexp_quoted_app.jsonl 0
+expect 104_grep_quoted_gt_two.jsonl 0
 
 python3 -I "$CHECK" "$T/missing.jsonl" >/dev/null 2>&1
 [ $? -eq 2 ] && pass "unreadable file exits 2" || fail "unreadable file should exit 2"
