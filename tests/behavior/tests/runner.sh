@@ -31,6 +31,7 @@ reset() { : > "$WARDEN_STUB_LOG"; rm -f "$WARDEN_STUB_LOG.count"; rm -rf "$T/run
 evals() { grep -c '^CALL eval' "$WARDEN_STUB_LOG"; }
 
 cd "$HERE/../../.." || exit 1
+rm -rf tests/behavior/lib/__pycache__
 STATUS_BEFORE=$(git status --porcelain)
 
 # 1. no graphify -> exit 3, no eval
@@ -189,5 +190,19 @@ STATUS_AFTER=$(git status --porcelain)
 [ "$STATUS_BEFORE" = "$STATUS_AFTER" ] && pass "8 git status unchanged" || fail "8 git status changed"
 left=$(ls -A "$T/tmp")
 [ -z "$left" ] && pass "8 no scratch dir left" || fail "8 scratch left: $left"
+
+# 14. no bytecode left beside the grader. record.py loads graph_first.py with importlib;
+# the default python3 (not /usr/bin/python3, which never writes bytecode) must not leave __pycache__.
+rm -rf tests/behavior/lib/__pycache__
+mkdir -p "$T/r14"
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}' > "$T/r14/trace.jsonl"
+SHA14=$(git rev-parse HEAD)
+printf 'read-order - %s at-least 1\n' "$SHA14" > "$T/r14/conf"
+printf '{"claudeVersion":"x","cases":[{"name":"read-order","arms":{"with":[{"tracePath":"%s"}]}}]}' "$T/r14/trace.jsonl" > "$T/r14/result.json"
+python3 -I tests/behavior/lib/record.py --conf "$T/r14/conf" --out-dir "$T/r14/out" --runs 1 --graphify-version x \
+  --fixture-hash y --id t14 --result "$SHA14=$T/r14/result.json" >/dev/null 2>&1
+if [ -e tests/behavior/lib/__pycache__ ]; then
+  fail "14 record.py left tests/behavior/lib/__pycache__"; rm -rf tests/behavior/lib/__pycache__
+else pass "14 no bytecode left in tests/behavior/lib"; fi
 
 [ "$FAILURES" -eq 0 ]

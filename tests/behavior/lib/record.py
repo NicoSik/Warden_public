@@ -54,6 +54,7 @@ def graph_first(trace):
 
 def first_commands(trace, limit=5):
     """Return the first tool calls of a trace as display lines. Terminal only, never recorded."""
+    sys.dont_write_bytecode = True  # keep __pycache__ out of the repo
     spec = importlib.util.spec_from_file_location("graph_first", GRAPH_FIRST)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
