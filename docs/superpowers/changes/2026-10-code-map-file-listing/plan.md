@@ -91,7 +91,7 @@ The existing traces 1–15 keep their current expected values.
 
 **Steps:**
 - [ ] Write the new traces and add one `expect` line per trace to `graph_first.sh`.
-- [ ] Run `bash tests/behavior_harness.sh graph_first`. See the new rows for `ls graphify-out`, `ls -la graphify-out`, `cd graphify-out && cat GRAPH_REPORT.md`, `tree`, `wc -l app/x.ts`, `grep … graphify-out/…` and the Grep tool fail.
+- [ ] Run `bash tests/behavior_harness.sh graph_first`. See the new rows for `ls graphify-out`, `ls -la graphify-out`, `cd graphify-out && cat GRAPH_REPORT.md`, `tree`, `wc -l app/x.ts`, the Grep tool on `graphify-out`, `rg foo graphify-out` and the Glob pattern on `graphify-out/` fail.
 - [ ] Change `EXPLORE_CMD`, `bash_first` and `classify` as rules 1–7 state.
 - [ ] Run `bash tests/behavior_harness.sh graph_first`. See every row pass, traces 1–15 included.
 - [ ] Commit: `fix: grade file listing and graph-output checks as the Code Map intent states`. The grader is frozen from this commit.
