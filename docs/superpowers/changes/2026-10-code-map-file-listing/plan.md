@@ -27,7 +27,7 @@
 2. **R2 — A baseline of `-` breaks the default two-arm path.** Cost: the existing baseline record and its tests break. The existing runner tests 1–8 stay unchanged and must still pass.
 3. **R3 — The diagnostic print leaks transcript text into the record.** Cost: a public record holds transcript text. Runner test 6 already asserts that the record holds no `graphify query x` and no `a.ts`. Task 3 adds a test that the terminal does show that text, so the test proves the split.
 4. **R4 — The held-out case is graded by the wrong grader.** `record.py` grades by `case == "read-order"` today, so `read-order-heldout` would fall through to the `triggered` grader and error. Task 3 makes every case whose name starts with `read-order` use `graph_first`.
-5. **R5 — The wording is narrower than the grader.** The D4 text allows only an existence check of `graphify-out/`. The grader also allows `ls`, `tree`, `cat`, `head`, `tail` and `wc` on `graphify-out/`. An agent that follows the wording always passes the grader. The reverse gap is intended.
+5. **R5 — The wording is narrower than the grader.** The D4 text allows only an existence check of `graphify-out/`. The grader allows any command that touches only `graphify-out/`. An agent that follows the wording always passes the grader. The reverse gap is intended.
 
 Ruled out:
 - Changing the output of `graph_first.py` for the diagnostic print. It would touch the frozen grader. `record.py` loads `tool_calls` from it with `importlib` instead.
@@ -62,25 +62,29 @@ Ruled out:
 The rule to build in `bash_first`:
 
 1. Add `tree` and `wc` to `EXPLORE_CMD`. Capture the verb.
-2. A segment is a graph-output check only when its verb is one of `ls`, `tree`, `cat`, `head`, `tail`, `wc`, and every path token in it names `graphify-out`. A path token is a token that contains `/`, or that equals `graphify-out` or `./graphify-out`. A token names `graphify-out` when it equals `graphify-out`, `./graphify-out`, or starts with `graphify-out/` or `./graphify-out/`, and has no `..` part.
+2. A segment with an explore verb is a graph-output check when it has at least one path token and every path token in it names `graphify-out`. This holds for every explore verb, `grep`, `rg` and `find` included. A path token is a token that contains `/`, or that equals `graphify-out` or `./graphify-out`. A token names `graphify-out` when it equals `graphify-out`, `./graphify-out`, or starts with `graphify-out/` or `./graphify-out/`, and has no `..` part.
 3. A segment with an explore verb and no path token is exploration (for example `ls`, `tree`, `cat README.md`). The current special case `not paths and OUT in seg` goes away, because rule 2 covers it.
 4. `cd graphify-out`, `cd graphify-out/` and `cd ./graphify-out` set a flag for the rest of the command. While the flag is set, every argument that is not a flag (does not start with `-`) and has no `..` part counts as a `graphify-out` path, and a segment with no argument counts as a check of `graphify-out`. Any other `cd` clears the flag.
-5. `grep`, `rg`, `find`, `sed`, `git grep` and `git ls-files` are exploration on any path, `graphify-out/` included. The intent allows only list, exists and read on `graphify-out/`.
+5. Nicolai ruled on 2026-10-21 that any command touching only `graphify-out/` is allowed, since D4 forbids only touching source files. A command that touches any other path, or no path, stays exploration.
 6. `test` and `[` are not explore verbs. They stay ignored.
-7. For the tools: `Read` on a `graphify-out/` path is not exploration. `Grep` and `Glob` are exploration on any path, because the intent allows only the Read tool.
+7. For the tools, use the same naming rule as rule 2. `Read` is not exploration when `file_path` names `graphify-out`. `Grep` is not exploration when `path` names `graphify-out`. `Glob` is not exploration when `path` names `graphify-out`, or when `path` is empty and `pattern` names `graphify-out`. A `Grep` or `Glob` call with no `path` searches the repository, so it is exploration (except the Glob pattern case).
 
 Each new trace holds one Bash (or tool) call followed by `graphify query "x"`, in the format of `traces/8_gitlsfiles_then_graph.jsonl`. Want 1 (allowed check, then query):
 - `ls graphify-out`, `ls graphify-out/`, `ls -la graphify-out`, `ls graphify-out/graph.json`
 - `test -d graphify-out`, `test -f graphify-out/graph.json`, `[ -d graphify-out ]`, `[ -f graphify-out/graph.json ]`
 - `cat graphify-out/GRAPH_REPORT.md`, `head -n 50 graphify-out/GRAPH_REPORT.md`, `tail graphify-out/GRAPH_REPORT.md`, `wc -l graphify-out/GRAPH_REPORT.md`, `tree graphify-out`
 - `cd graphify-out && cat GRAPH_REPORT.md`
+- `grep -n foo graphify-out/GRAPH_REPORT.md`, `rg foo graphify-out`, `find graphify-out -name '*.json'`
+- the Grep tool with `pattern` `foo` and `path` `graphify-out`
+- the Glob tool with `pattern` `graphify-out/*.json` and no `path`
 - the Read tool on `graphify-out/GRAPH_REPORT.md` (trace 9 already covers this; do not duplicate it)
 
 Want 0 (exploration first):
 - `tree`, `wc -l app/x.ts`, `ls` (repo root), `ls -la`
 - `cd graphify-out && cat ../app/x.ts`, `cat graphify-out/../app/x.ts`
-- `grep -n foo graphify-out/GRAPH_REPORT.md`
-- the Grep tool with `path` `graphify-out`
+- `grep -rn foo graphify-out app`, `find . graphify-out -name '*.ts'` (one path outside `graphify-out/` is enough)
+- the Grep tool with `pattern` `foo` and `path` `app`
+- the Glob tool with `pattern` `app/**/*.ts` and no `path`
 - `cd graphify-out && cd .. && ls`
 
 The existing traces 1–15 keep their current expected values.
