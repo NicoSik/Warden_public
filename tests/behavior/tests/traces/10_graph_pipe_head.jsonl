@@ -1,0 +1,2 @@
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"graphify query \"x\" | head -40","description":"d"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"app/x.ts"}}]}}

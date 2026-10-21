@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# Rerunnable behavior baseline for the vendored Superpowers plugin.
+# Usage: run-behavior [--case <name>|all] [--runs N] [--model ID] [--yes]
+# Exit: 0 all criteria met, 1 a criterion failed, 2 usage error or partial eval, 3 preflight failed.
+set -uo pipefail
+
+HERE=$(cd -P "$(dirname "$0")" && pwd)
+REPO=$(cd -P "$HERE/../.." && pwd)
+EVALS="$HERE/evals"
+CONF="$EVALS/arms.conf"
+RECORD_DIR="${WARDEN_BEHAVIOR_RECORD_DIR:-$REPO/docs/superpowers/changes/2026-10-rerunnable-behavior-baseline/runs}"
+RAW_BASE="${WARDEN_BEHAVIOR_RAW_DIR:-$HOME/.cache/warden-behavior}"
+LABEL="list-price estimate; not billed on a subscription login, uses your plan's usage limits"
+
+CASE=all RUNS=5 MODEL="" YES=0
+usage() { echo "usage: run-behavior [--case <name>|all] [--runs N] [--model ID] [--yes]" >&2; exit 2; }
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --case) [ $# -ge 2 ] || usage; CASE="$2"; shift ;;
+    --runs) [ $# -ge 2 ] || usage; RUNS="$2"; shift ;;
+    --model) [ $# -ge 2 ] || usage; MODEL="$2"; shift ;;
+    --yes) YES=1 ;;
+    *) usage ;;
+  esac
+  shift
+done
+case "$RUNS" in ''|*[!0-9]*|0) usage ;; esac
+
+die3() { echo "preflight failed: $*" >&2; exit 3; }
+
+# Preflight, in order.
+claude --version >/dev/null 2>&1 || die3 "'claude --version' does not work"
+GRAPHIFY_VERSION=$(graphify --version 2>/dev/null | head -n1) || true
+[ -n "$GRAPHIFY_VERSION" ] || die3 "'graphify --version' does not work"
+[ -z "${ANTHROPIC_API_KEY:-}" ] || die3 "ANTHROPIC_API_KEY is set; unset it so the run uses your login"
+[ -z "${ANTHROPIC_AUTH_TOKEN:-}" ] || die3 "ANTHROPIC_AUTH_TOKEN is set; unset it so the run uses your login"
+
+resolve() { git -C "$REPO" rev-parse --verify -q "$1^{commit}" 2>/dev/null; }
+FETCHED=0
+resolve_or_fetch() {
+  local sha
+  sha=$(resolve "$1") && { printf '%s\n' "$sha"; return 0; }
+  if [ "$FETCHED" -eq 0 ]; then FETCHED=1; git -C "$REPO" fetch -q fork >/dev/null 2>&1 || true; fi
+  resolve "$1"
+}
+
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/warden-behavior.XXXXXX") || exit 2
+trap 'rm -rf "$WORK"' EXIT
+
+# Resolve arms.conf into full SHAs, filtered by --case.
+: > "$WORK/conf"
+while read -r c base cand rule count; do
+  case "$c" in ''|'#'*) continue ;; esac
+  bsha=$(resolve_or_fetch "$base") || die3 "ref $base in arms.conf does not resolve"
+  csha=$(resolve_or_fetch "$cand") || die3 "ref $cand in arms.conf does not resolve"
+  if [ "$CASE" = all ] || [ "$CASE" = "$c" ]; then
+    printf '%s %s %s %s %s\n' "$c" "$bsha" "$csha" "$rule" "$count" >> "$WORK/conf"
+  fi
+done < "$CONF"
+[ -s "$WORK/conf" ] || { echo "no case matches '$CASE'" >&2; exit 2; }
+
+NCASES=$(wc -l < "$WORK/conf" | tr -d ' ')
+AGENTS=$((NCASES * 2 * RUNS))
+LO=0 HI=0
+while read -r c _ _ _ _; do
+  case "$c" in
+    setup-planning|read-order) LO=$((LO + 10 * 2 * RUNS)); HI=$((HI + 40 * 2 * RUNS)) ;;
+    *) LO=$((LO + 2 * 2 * RUNS)); HI=$((HI + 10 * 2 * RUNS)) ;;
+  esac
+done < "$WORK/conf"
+fmt() { printf '%d.%02d' $(($1 / 100)) $(($1 % 100)); }
+
+echo "Agents: $AGENTS ($NCASES cases x 2 arms x $RUNS runs)"
+echo "Model: ${MODEL:-account default}"
+echo "Estimate: US\$$(fmt $LO) to US\$$(fmt $HI) at US\$0.10-0.40 per planning run and US\$0.02-0.10 per other run ($LABEL)"
+if [ "$YES" -ne 1 ]; then
+  printf 'Start %s agents? [y/N] ' "$AGENTS"
+  read -r ans || ans=n
+  case "$ans" in y|Y|yes|YES) ;; *) echo "Cancelled."; exit 2 ;; esac
+fi
+
+# Materialize and evaluate each distinct arm ref once.
+REFS=$(awk '{print $2; print $3}' "$WORK/conf" | awk '!seen[$0]++')
+ID=$(python3 -I -c 'import secrets;print(secrets.token_hex(3))')
+RESULT_ARGS=()
+n=0
+for sha in $REFS; do
+  n=$((n + 1))
+  scratch="$WORK/arm-$n"
+  mkdir -p "$scratch"
+  git -C "$REPO" archive "$sha" plugins/superpowers | tar -x -C "$scratch" || { echo "git archive failed for $sha" >&2; exit 2; }
+  dest="$scratch/plugins/superpowers/warden-evals"
+  mkdir -p "$dest"
+  cp -R "$EVALS/." "$dest/"
+  rm -f "$dest/arms.conf"
+  res="$WORK/result-$n.json"
+  model_args=()
+  [ -n "$MODEL" ] && model_args=(--model "$MODEL")
+  # plugin eval honours only the last --case, so run one eval per case and merge.
+  parts=()
+  k=0
+  for c in $(awk -v s="$sha" '$2==s || $3==s {print $1}' "$WORK/conf" | awk '!seen[$0]++'); do
+    k=$((k + 1))
+    part="$WORK/result-$n-$k.json"
+    echo "Evaluating $(printf '%s' "$sha" | cut -c1-7) $c ..."
+    ( cd "$scratch" && claude plugin eval "$scratch/plugins/superpowers" \
+        --no-publish --ablation none --scaffold --trust-plugin --keep-temp \
+        --eval-dir warden-evals --json "$part" --allow-tools Bash --runs "$RUNS" \
+        ${model_args[@]+"${model_args[@]}"} --case "$c" >"$WORK/eval-$n-$k.log" 2>&1 )
+    parts+=("$part")
+  done
+  python3 -I - "$res" "${parts[@]}" <<'PY' || { echo "error: could not merge eval results for $sha" >&2; exit 2; }
+import json, sys
+out, parts = sys.argv[1], sys.argv[2:]
+merged = None
+for p in parts:
+    d = json.load(open(p))
+    if merged is None:
+        merged = d
+        continue
+    merged["cases"] += d.get("cases", [])
+    merged["costUsd"] = (merged.get("costUsd") or 0) + (d.get("costUsd") or 0)
+    merged["partial"] = bool(merged.get("partial")) or bool(d.get("partial"))
+json.dump(merged, open(out, "w"))
+PY
+  RESULT_ARGS+=(--result "$sha=$res")
+done
+
+FIXTURE_HASH=$(git -C "$REPO" rev-parse HEAD:tests/behavior/evals/_fixture/storefront)
+python3 -I "$HERE/lib/record.py" --conf "$WORK/conf" --out-dir "$RECORD_DIR" --runs "$RUNS" \
+  --graphify-version "$GRAPHIFY_VERSION" --fixture-hash "$FIXTURE_HASH" --id "$ID" \
+  --raw-dir "$RAW_BASE/$ID" "${RESULT_ARGS[@]}"
+rc=$?
+
+# Keep the raw results outside the repo.
+if [ "$rc" -le 1 ]; then
+  mkdir -p "$RAW_BASE/$ID" && cp "$WORK"/result-[0-9].json "$WORK"/result-[0-9][0-9].json "$RAW_BASE/$ID/" 2>/dev/null || true
+fi
+exit "$rc"
