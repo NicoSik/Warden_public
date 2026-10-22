@@ -51,6 +51,7 @@ assert_absent "$HOME/.local/bin/warden-handoff"
 
 # REQ-4.4
 assert_contains "$out" "claude plugin marketplace remove"
+assert_contains "$out" "claude plugin marketplace remove warden"
 assert_contains "$out" "rm -f \$HOME/bin/claude-context-monitor"
 
 # REQ-4.2 with two backups: the newest wins.

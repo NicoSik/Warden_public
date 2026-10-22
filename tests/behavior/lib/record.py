@@ -4,7 +4,8 @@
 Usage: record.py --conf FILE --out-dir DIR --runs N --graphify-version V
                  --fixture-hash H --id ID --result SHA=FILE [--result ...]
 
-FILE lines of --conf: <case> <baseline-sha or -> <candidate-sha> <at-least|at-most> <count>.
+FILE lines of --conf: <case> <baseline-sha or -> <candidate-sha> <at-least|at-most|both-at-least> <count>.
+both-at-least gates the baseline arm too, so it needs a baseline sha.
 Exit: 0 all criteria met, 1 a candidate criterion failed, 2 bad or partial result.
 """
 import argparse
@@ -19,6 +20,8 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 GRAPH_FIRST = os.path.join(HERE, "graph_first.py")
+
+AT_LEAST = ("at-least", "both-at-least")  # rules that count hits upward
 
 LABEL = "list-price estimate; not billed on a subscription login, uses your plan's usage limits"
 ATTEMPTS = ("Runs measure attempts. Inside the eval sandbox on macOS, git, the home-installed "
@@ -107,9 +110,36 @@ def grade_run(case, rule, run):
         return val == 1, "graph_first=%d first=%s" % (val, first)
     for g in run.get("graders") or []:
         if g.get("name") == "triggered":
-            trig = bool(g.get("passed")) if rule == "at-least" else not bool(g.get("passed"))
+            trig = bool(g.get("passed")) if rule in AT_LEAST else not bool(g.get("passed"))
             return trig, "triggered=%s" % ("yes" if trig else "no")
     return None, "errored (no triggered grader)"
+
+
+def trace_models(raw_dir):
+    """Distinct message.model values on assistant lines of the kept traces under raw_dir."""
+    found = set()
+    if not raw_dir:
+        return found
+    for root, _dirs, files in os.walk(os.path.join(raw_dir, "traces")):
+        for name in files:
+            if not name.endswith(".jsonl"):
+                continue
+            try:
+                with open(os.path.join(root, name)) as f:
+                    for ln in f:
+                        try:
+                            d = json.loads(ln)
+                        except ValueError:
+                            continue
+                        if not isinstance(d, dict) or d.get("type") != "assistant":
+                            continue
+                        m = d.get("message")
+                        m = m.get("model") if isinstance(m, dict) else None
+                        if isinstance(m, str) and m:
+                            found.add(m)
+            except OSError:
+                continue
+    return found
 
 
 def main():
@@ -150,9 +180,14 @@ def main():
                 p = ln.split()
                 if len(p) == 5:
                     conf.append(p)
+        for case, base, cand, rule, count in conf:
+            if rule == "both-at-least" and base == "-":
+                print("error: row '%s %s %s %s %s': both-at-least needs a baseline sha" % (case, base, cand, rule, count),
+                      file=sys.stderr)
+                return 2
 
         versions = {r.get("claudeVersion") for r in results.values()}
-        models = {(r.get("suite") or {}).get("modelOverride") or "account default" for r in results.values()}
+        models = trace_models(a.raw_dir) or {"unknown (no model ID in traces)"}
         shas = []
         for case, base, cand, rule, count in conf:
             for s in (base, cand):
@@ -194,9 +229,9 @@ def main():
                         case, arm, i, detail, r.get("score"), r.get("passed"), r.get("turns"), cost,
                         "; error: %s" % redact(r.get("error")) if r.get("error") else ""))
                 what = "graph-first" if case.startswith("read-order") else "triggered"
-                op = ">=" if rule == "at-least" else "<="
-                if arm == "candidate":
-                    ok = hits >= int(count) if rule == "at-least" else hits <= int(count)
+                op = ">=" if rule in AT_LEAST else "<="
+                if arm == "candidate" or rule == "both-at-least":
+                    ok = hits >= int(count) if rule in AT_LEAST else hits <= int(count)
                     if errored:
                         ok = False
                     verdict = "PASS" if ok else "FAIL"

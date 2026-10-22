@@ -1,0 +1,15 @@
+{
+  "name": "warden",
+  "description": "Warden hooks marketplace",
+  "owner": {
+    "name": "Warden"
+  },
+  "plugins": [
+    {
+      "name": "warden",
+      "description": "Injects the Code Map read-order rule into the main session and every subagent",
+      "version": "0.1.0",
+      "source": "./"
+    }
+  ]
+}

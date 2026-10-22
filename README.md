@@ -30,7 +30,7 @@ Claude reads `INSTALL.md`, tells you every path it will write to, and waits for 
 | `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` | Nine symbolic links into this repository. Anything displaced is renamed, never removed. |
 | `$HOME/.local/bin/warden-handoff` | A link to the handoff tool. |
 | `$HOME/bin` | The two context-monitor binaries, checksum-verified. |
-| `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/known_marketplaces.json` | Two plugin marketplaces registered through the `claude` CLI: the `superpowers` plugin vendored in this repository, and `cathrynlavery/diagram-design`, which the CLI clones from GitHub. The CLI writes that file, not the installer. |
+| `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/known_marketplaces.json` | Three plugin marketplaces registered through the `claude` CLI: the `superpowers` and `warden` plugins vendored in this repository, and `cathrynlavery/diagram-design`, which the CLI clones from GitHub. The CLI writes that file, not the installer. |
 | this clone's `.git/config` | `core.hooksPath` set to `.githooks`, so the pre-commit scrub hook runs. This clone only, never a global git setting, and skipped when `core.hooksPath` already points somewhere else. |
 
 The installer needs network access: the `claude` CLI clones the diagram-design marketplace, and
@@ -62,6 +62,7 @@ alone, because the archive never held them.
 | `docs/decisions/` | the config directory | Why this setup is shaped the way it is |
 | `bin/` | the config directory | `warden-handoff`, `warden-statusline`, `warden-session-tokens`, `warden-usage` |
 | `plugins/superpowers/` | not linked | The vendored method plugin |
+| `plugins/warden/` | not linked | The plugin that injects the Code Map rule at session start and into each subagent |
 
 ## Wired hooks
 

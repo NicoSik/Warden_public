@@ -27,10 +27,26 @@ terminal under `first commands: <case> / <arm> / run <i>`. This text never goes 
 
 Each arm comes from `git archive <ref> plugins/superpowers` into a scratch directory. The run never
 checks out a ref and never touches your project, your `~/.claude`, or the git state of this repo.
+`claude plugin eval` loads one plugin. When an arm has `plugins/warden`, the wrapper also archives
+`plugins/warden/hooks` and merges it into the scratch Superpowers plugin. It copies every file of
+`plugins/warden/hooks/` except `hooks.json` into the scratch `plugins/superpowers/hooks/`, and appends each
+`warden` hook entry to the matching event array of the scratch `hooks.json`. If a copied file already
+exists, the wrapper exits 2 with `merge collision: <path>` and runs no eval. An arm without
+`plugins/warden` builds the same scratch tree as before. Limit: the proof covers the merged plugin, not
+the real install of two plugins side by side.
+
 Log in with a subscription. `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` must be unset.
 
 The record goes to `docs/superpowers/changes/2026-10-rerunnable-behavior-baseline/runs/<UTC date>-<id>.md`.
 Raw result JSON is kept outside the repo in `~/.cache/warden-behavior/<id>/`.
+
+The trace cache is `~/.cache/warden-behavior/`. Set `WARDEN_BEHAVIOR_RAW_DIR` to move it. Before the cost
+prompt the wrapper checks the nearest existing folder of the trace cache. If that folder is inside a git
+work tree, the wrapper exits 2 and names `WARDEN_BEHAVIOR_RAW_DIR`. `record.py` deletes the eval temp
+folders, so before it runs the wrapper copies every trace that the results name to
+`<id>/traces/<case>/<arm-sha7>/run-<i>.jsonl`. After the record is written, the wrapper deletes the oldest
+run folders (by modification time) until 20 remain. It touches only entries whose name is six lowercase
+hexadecimal characters.
 
 ## Cost
 
