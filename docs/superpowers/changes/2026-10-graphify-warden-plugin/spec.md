@@ -212,9 +212,10 @@ applies.
 
 - **Answered.** How the rule reaches subagents. REQ-2 answers it with a `SubagentStart` hook.
 - **Approved 2026-10-22, answered during the build.** The real `claude plugin eval` traces were
-  deleted, so nobody knows where a trace stores the model ID. After REQ-8.1 is built, one live
-  wrapper run with one case and one run keeps its trace. That run confirms that REQ-8.1 copies
-  the trace before `cleanup()`, and it names the model ID field. REQ-8.5 is built after it.
+  deleted, so nobody knows where a trace stores the model ID. After the plan builds REQ-8.1, one
+  live wrapper run with one case and one run keeps its trace. That run shows that REQ-8.1 copies
+  the trace before `cleanup()`, and it names the model ID field. The plan builds REQ-8.5 after
+  that run.
 - **Answered 2026-10-22.** The retention count is 20 run folders.
 
 ## Design notes
