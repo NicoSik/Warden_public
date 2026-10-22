@@ -161,5 +161,45 @@ if grep -rq 'tracePath' "$FX"/726866-setup.json "$FX"/cbb2f3-setup.json; then
   fail "9 a setup fixture holds a tracePath key"
 else pass "9 the setup fixtures hold no tracePath key"; fi
 
+# 10-12. The Model pin comes from message.model on assistant lines of the kept traces.
+# model_pin RAWDIR -> prints the "- Model:" line of a record built with --raw-dir
+model_pin() {
+  rm -rf "$T/out"
+  python3 -I "$REC" --conf "$T/b.conf" --out-dir "$T/out" --runs 5 --graphify-version t \
+    --fixture-hash t --id test --raw-dir "$1" --result "$BASE=$T/ro4.json" --result "$CAND=$T/ro4.json" \
+    >/dev/null 2>&1
+  grep -h '^- Model:' "$T"/out/*.md 2>/dev/null
+}
+# stub_trace FILE MODEL -> a trace with ignored line types, a bad line, and one assistant line
+stub_trace() {
+  mkdir -p "$(dirname "$1")"
+  {
+    printf '%s\n' '{"type":"system","model":"claude-ignored-system"}'
+    printf '%s\n' 'not json'
+    printf '{"type":"assistant","message":{"model":"%s","content":[]}}\n' "$2"
+    printf '%s\n' '{"type":"user","message":{"model":"claude-ignored-user"}}'
+  } > "$1"
+}
+
+R1="$T/raw1"; stub_trace "$R1/traces/read-order/aaaaaaa/run-1.jsonl" claude-test-1
+got=$(model_pin "$R1")
+if [ "$got" = "- Model: claude-test-1" ]; then pass "10 one trace: the pin reads its model ID"
+else fail "10 got '$got'"; fi
+
+R2="$T/raw2"
+stub_trace "$R2/traces/read-order/aaaaaaa/run-1.jsonl" claude-test-2
+stub_trace "$R2/traces/read-order/bbbbbbb/run-1.jsonl" claude-test-1
+got=$(model_pin "$R2")
+if [ "$got" = "- Model: claude-test-1, claude-test-2" ]; then pass "11 two traces: both IDs listed, sorted"
+else fail "11 got '$got'"; fi
+
+R3="$T/raw3"; mkdir -p "$R3/traces/read-order/aaaaaaa"
+printf '%s\n' '{"type":"system"}' > "$R3/traces/read-order/aaaaaaa/run-1.jsonl"
+got=$(model_pin "$R3")
+got_empty=$(model_pin "")
+if [ "$got" = "- Model: unknown (no model ID in traces)" ] && [ "$got_empty" = "$got" ]; then
+  pass "12 no ID (or no raw dir): the pin reads unknown"
+else fail "12 got '$got' / '$got_empty'"; fi
+
 [ ! -d "$HERE/../lib/__pycache__" ] || fail "record.py left a __pycache__ beside the grader"
 harness_exit

@@ -55,10 +55,10 @@ for name in os.environ["STUB_CASES"].split():
         os.makedirs(os.path.join(d, "out"))
         tp = os.path.join(d, "out", "trace.jsonl")
         cmd = "graphify query x" if trig else "cat a.ts"
-        lines = [{"type": "assistant", "message": {"content": [
+        lines = [{"type": "assistant", "message": {"model": "claude-stub-1", "content": [
             {"type": "tool_use", "name": "Bash", "input": {"command": cmd}}]}}]
         if name.startswith("read-order") and not trig:
-            lines = [{"type": "assistant", "message": {"content": [
+            lines = [{"type": "assistant", "message": {"model": "claude-stub-1", "content": [
                 {"type": "tool_use", "name": "Read", "input": {"file_path": "a.ts"}}]}}] + lines
         with open(tp, "w") as f:
             for l in lines:

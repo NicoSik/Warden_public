@@ -95,7 +95,7 @@ EOF2
 rec=$(ls "$T/runs"/*.md 2>/dev/null | head -n1)
 if [ -n "$rec" ]; then
   ok=1
-  for p in 'Claude Code version' 'Model' 'graphify' 'Fixture tree hash' "$(git rev-parse c91be4c)" "$(git rev-parse 5a972be)" "$(git rev-parse 8199034)" '2.1.305' 'account default' '9.9.9-stub' "$(git rev-parse HEAD:tests/behavior/evals/_fixture/storefront)" \
+  for p in 'Claude Code version' 'Model' 'graphify' 'Fixture tree hash' "$(git rev-parse c91be4c)" "$(git rev-parse 5a972be)" "$(git rev-parse 8199034)" '2.1.305' 'claude-stub-1' '9.9.9-stub' "$(git rev-parse HEAD:tests/behavior/evals/_fixture/storefront)" \
     'Runs measure attempts. Inside the eval sandbox on macOS, git, the home-installed Graphify binary, and `.git/config` writes are blocked, so `graphify-setup` and `graphify query` fail inside a run.'; do
     grep -qF -- "$p" "$rec" || { ok=0; echo "    missing: $p"; }
   done

@@ -115,6 +115,33 @@ def grade_run(case, rule, run):
     return None, "errored (no triggered grader)"
 
 
+def trace_models(raw_dir):
+    """Distinct message.model values on assistant lines of the kept traces under raw_dir."""
+    found = set()
+    if not raw_dir:
+        return found
+    for root, _dirs, files in os.walk(os.path.join(raw_dir, "traces")):
+        for name in files:
+            if not name.endswith(".jsonl"):
+                continue
+            try:
+                with open(os.path.join(root, name)) as f:
+                    for ln in f:
+                        try:
+                            d = json.loads(ln)
+                        except ValueError:
+                            continue
+                        if not isinstance(d, dict) or d.get("type") != "assistant":
+                            continue
+                        m = d.get("message")
+                        m = m.get("model") if isinstance(m, dict) else None
+                        if isinstance(m, str) and m:
+                            found.add(m)
+            except OSError:
+                continue
+    return found
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--conf", required=True)
@@ -160,7 +187,7 @@ def main():
                 return 2
 
         versions = {r.get("claudeVersion") for r in results.values()}
-        models = {(r.get("suite") or {}).get("modelOverride") or "account default" for r in results.values()}
+        models = trace_models(a.raw_dir) or {"unknown (no model ID in traces)"}
         shas = []
         for case, base, cand, rule, count in conf:
             for s in (base, cand):
