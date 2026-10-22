@@ -1,0 +1,155 @@
+{
+ "5a972be842a482c77279afc9331d0c2c77414a30": {
+  "cases": [
+   {
+    "arms": {
+     "with": [
+      {
+       "costUsd": 0.33329500000000006,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 17
+      },
+      {
+       "costUsd": 0.3322466,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 18
+      },
+      {
+       "costUsd": 0.3231514,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 18
+      },
+      {
+       "costUsd": 0.30948640000000005,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 16
+      },
+      {
+       "costUsd": 0.3205916,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 16
+      }
+     ]
+    },
+    "name": "setup-planning"
+   }
+  ],
+  "claudeVersion": "2.1.306",
+  "partial": false,
+  "suite": {}
+ },
+ "c91be4c168c8dee05c37a928f8e93823e135e05c": {
+  "cases": [
+   {
+    "arms": {
+     "with": [
+      {
+       "costUsd": 0.2684022,
+       "error": "the run directory (or a directory inside it) is no longer the one the harness listed, or cannot be listed \u2014 moved, removed, replaced by a link, made unreadable, or too deep or too large to walk \u2014 so its file evidence cannot be trusted",
+       "graders": [],
+       "passed": false,
+       "score": 0,
+       "turns": 0
+      },
+      {
+       "costUsd": 0.3171286,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": false
+        }
+       ],
+       "passed": false,
+       "score": 0,
+       "turns": 19
+      },
+      {
+       "costUsd": 0.30930820000000003,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": false
+        }
+       ],
+       "passed": false,
+       "score": 0,
+       "turns": 17
+      },
+      {
+       "costUsd": 0.2969014,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": false
+        }
+       ],
+       "passed": false,
+       "score": 0,
+       "turns": 16
+      },
+      {
+       "costUsd": 0.2939258,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": false
+        }
+       ],
+       "passed": false,
+       "score": 0,
+       "turns": 15
+      }
+     ]
+    },
+    "name": "setup-planning"
+   }
+  ],
+  "claudeVersion": "2.1.306",
+  "partial": false,
+  "suite": {}
+ }
+}

@@ -1,0 +1,83 @@
+{
+ "claudeVersion": "synthetic",
+ "partial": false,
+ "cases": [
+  {
+   "name": "read-order",
+   "arms": {
+    "with": [
+     {
+      "tracePath": "1_graph_then_read.jsonl",
+      "error": null,
+      "score": 1,
+      "passed": true,
+      "turns": 1,
+      "costUsd": 0,
+      "graders": [
+       {
+        "name": "bash-used",
+        "passed": true
+       }
+      ]
+     },
+     {
+      "tracePath": "4_report_then_graph.jsonl",
+      "error": null,
+      "score": 1,
+      "passed": true,
+      "turns": 1,
+      "costUsd": 0,
+      "graders": [
+       {
+        "name": "bash-used",
+        "passed": true
+       }
+      ]
+     },
+     {
+      "tracePath": "6_noise.jsonl",
+      "error": null,
+      "score": 1,
+      "passed": true,
+      "turns": 1,
+      "costUsd": 0,
+      "graders": [
+       {
+        "name": "bash-used",
+        "passed": true
+       }
+      ]
+     },
+     {
+      "tracePath": "9_read_report_then_graph.jsonl",
+      "error": null,
+      "score": 1,
+      "passed": true,
+      "turns": 1,
+      "costUsd": 0,
+      "graders": [
+       {
+        "name": "bash-used",
+        "passed": true
+       }
+      ]
+     },
+     {
+      "tracePath": "2_read_then_graph.jsonl",
+      "error": null,
+      "score": 1,
+      "passed": true,
+      "turns": 1,
+      "costUsd": 0,
+      "graders": [
+       {
+        "name": "bash-used",
+        "passed": true
+       }
+      ]
+     }
+    ]
+   }
+  }
+ ]
+}

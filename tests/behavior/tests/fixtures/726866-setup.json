@@ -1,0 +1,452 @@
+{
+ "5a972be842a482c77279afc9331d0c2c77414a30": {
+  "cases": [
+   {
+    "arms": {
+     "with": [
+      {
+       "costUsd": 0.1205521,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": false
+        }
+       ],
+       "passed": false,
+       "score": 0,
+       "turns": 12
+      },
+      {
+       "costUsd": 0.1278297,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 14
+      },
+      {
+       "costUsd": 0.1170091,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 10
+      },
+      {
+       "costUsd": 0.1274794,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 13
+      },
+      {
+       "costUsd": 0.1397127,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 17
+      }
+     ]
+    },
+    "name": "setup-planning"
+   },
+   {
+    "arms": {
+     "with": [
+      {
+       "costUsd": 0.06084710000000001,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 3
+      },
+      {
+       "costUsd": 0.0611125,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 3
+      },
+      {
+       "costUsd": 0.0599528,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 3
+      },
+      {
+       "costUsd": 0.059848,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 3
+      },
+      {
+       "costUsd": 0.060899999999999996,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 3
+      }
+     ]
+    },
+    "name": "setup-quick-question"
+   },
+   {
+    "arms": {
+     "with": [
+      {
+       "costUsd": 0.0510501,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 1
+      },
+      {
+       "costUsd": 0.0500361,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 1
+      },
+      {
+       "costUsd": 0.050464100000000005,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 1
+      },
+      {
+       "costUsd": 0.0520701,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 1
+      },
+      {
+       "costUsd": 0.050622099999999996,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 1
+      }
+     ]
+    },
+    "name": "setup-non-coding"
+   }
+  ],
+  "claudeVersion": "2.1.306",
+  "partial": false,
+  "suite": {
+   "modelOverride": "sonnet"
+  }
+ },
+ "c91be4c168c8dee05c37a928f8e93823e135e05c": {
+  "cases": [
+   {
+    "arms": {
+     "with": [
+      {
+       "costUsd": 0.15141330000000003,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": false
+        }
+       ],
+       "passed": false,
+       "score": 0,
+       "turns": 12
+      },
+      {
+       "costUsd": 0.1155775,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": false
+        }
+       ],
+       "passed": false,
+       "score": 0,
+       "turns": 10
+      },
+      {
+       "costUsd": 0.1246569,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": false
+        }
+       ],
+       "passed": false,
+       "score": 0,
+       "turns": 15
+      },
+      {
+       "costUsd": 0.12016069999999998,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": false
+        }
+       ],
+       "passed": false,
+       "score": 0,
+       "turns": 12
+      },
+      {
+       "costUsd": 0.11826930000000001,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": false
+        }
+       ],
+       "passed": false,
+       "score": 0,
+       "turns": 12
+      }
+     ]
+    },
+    "name": "setup-planning"
+   },
+   {
+    "arms": {
+     "with": [
+      {
+       "costUsd": 0.0587443,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 3
+      },
+      {
+       "costUsd": 0.05842,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 3
+      },
+      {
+       "costUsd": 0.057814300000000006,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 3
+      },
+      {
+       "costUsd": 0.0581932,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 3
+      },
+      {
+       "costUsd": 0.058748800000000004,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 3
+      }
+     ]
+    },
+    "name": "setup-quick-question"
+   },
+   {
+    "arms": {
+     "with": [
+      {
+       "costUsd": 0.0492181,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 1
+      },
+      {
+       "costUsd": 0.0497861,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 1
+      },
+      {
+       "costUsd": 0.0495761,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 1
+      },
+      {
+       "costUsd": 0.0487481,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 1
+      },
+      {
+       "costUsd": 0.049914099999999996,
+       "error": null,
+       "graders": [
+        {
+         "name": "triggered",
+         "passed": true
+        }
+       ],
+       "passed": true,
+       "score": 1,
+       "turns": 1
+      }
+     ]
+    },
+    "name": "setup-non-coding"
+   }
+  ],
+  "claudeVersion": "2.1.306",
+  "partial": false,
+  "suite": {
+   "modelOverride": "sonnet"
+  }
+ }
+}
