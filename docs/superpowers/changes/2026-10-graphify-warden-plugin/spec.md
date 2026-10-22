@@ -38,12 +38,18 @@ Size: 9 requirements from 15 intent items.
 - **REQ-1.2** The injected context MUST equal the rule text byte for byte.
 - **REQ-1.3** The `warden` plugin MUST inject the rule text whether `graphify-out/graph.json`
   exists or not. The rule text states its own condition.
+- **REQ-1.4** The `code-map` hook MUST exit non-zero with no output when it cannot produce the
+  rule text. It MUST NOT block the session or the subagent. This applies to REQ-2 as well.
 
 *Proof: `tests/warden_hooks.sh` runs the session-start hook script and asserts that
 `hookSpecificOutput.hookEventName` is `SessionStart` and that `additionalContext` equals the rule
 text file. It also asserts that the two `SessionStart` matcher strings are equal, so a matcher
-change in one plugin fails the test. The manual smoke check in REQ-9 shows the hook firing in a
-real session.*
+change in one plugin fails the test. For REQ-1.4, the test runs the hook with no event, with an
+unknown event, and with no `code-map.md` beside it, and asserts a non-zero exit with empty
+output each time. It also asserts that no `warden` hook entry sets `onFailure`. The hooks
+reference states that `SessionStart` and `SubagentStart` cannot be blocked by an exit code,
+and that a hook failure blocks only when `onFailure` is `"block"`. The manual smoke check in
+REQ-9 shows the hook firing in a real session.*
 *Source: decision A1. Constraint "The Code Map text the agent sees does not change in wording".*
 
 **REQ-2** The `warden` plugin MUST give the rule text to every subagent when the subagent starts.
@@ -170,8 +176,9 @@ trace before it deletes the traces."*
 **REQ-9** The pull request MUST carry the evidence for the move.
 
 - **REQ-9.1** The pull request MUST link a run record in which read-order passes `both-at-least 4`
-  with baseline `7ac111f` and the move commit as candidate.
-- **REQ-9.2** The same record MUST show read-order-heldout at `at-least 4` for the move commit.
+  with baseline `7ac111f`. The candidate MUST be a branch commit that contains the move. The
+  record `runs/2026-10-22-26cbdd.md` uses `a48914a`.
+- **REQ-9.2** The same record MUST show read-order-heldout at `at-least 4` for the same candidate.
 - **REQ-9.3** The pull request body MUST record a manual smoke check with both plugins loaded from
   the branch with `--plugin-dir`, on Nicolai's normal login. The installed copy of the Superpowers
   plugin MUST be off for that session. The check MUST show that the `warden` `SessionStart` hook fires, that the
@@ -229,3 +236,17 @@ applies.
   them.
 - The retention count of 20 is a choice made in this spec and approved on 2026-10-22. The intent
   allowed a run count or a maximum age.
+
+## Reconciled 2026-10-22
+
+- REQ-1.4 — new. The build added two failure exits to the `code-map` hook: exit 2 for an
+  unknown or missing event, and exit 1 when `code-map.md` is missing. The spec did not describe
+  them. The hooks reference shows that neither exit code can block `SessionStart` or
+  `SubagentStart`. Ruling: the spec was wrong.
+- REQ-9.1 and REQ-9.2 — the spec named "the move commit" as the candidate. The gate ran on
+  `a48914a`, which holds the move and the Task 8 harness change. Task 8 touches no plugin file.
+  Ruling: the spec was wrong.
+- REQ-8.3 — the wrapper ran retention only when the grader exited 0 or 1. Ruling: the code was
+  wrong. The wrapper now runs retention after every run.
+- REQ-7.1 — the setup fixtures kept `suite.modelOverride` after Task 8 stopped the grader from
+  reading it. Ruling: the code was wrong. The fixtures no longer hold `suite`.
