@@ -84,6 +84,9 @@ install_plugins() {
   warden_run "register the vendored superpowers marketplace" \
     claude plugin marketplace add "$REPO/plugins/superpowers" \
     || warden_die "could not register the superpowers marketplace"
+  warden_run "register the vendored warden marketplace" \
+    claude plugin marketplace add "$REPO/plugins/warden" \
+    || warden_die "could not register the warden marketplace"
   warden_run "register the diagram-design marketplace" \
     claude plugin marketplace add cathrynlavery/diagram-design \
     || warden_die "could not register the diagram-design marketplace"

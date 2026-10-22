@@ -111,5 +111,6 @@ The plugins and the monitor binaries are still installed. To remove them:
 
   claude plugin marketplace remove superpowers-dev
   claude plugin marketplace remove diagram-design
+  claude plugin marketplace remove warden
   rm -f $HOME/bin/claude-context-monitor $HOME/bin/claude-statusline
 EOF

@@ -105,7 +105,8 @@
   },
   "enabledPlugins": {
     "diagram-design@diagram-design": true,
-    "superpowers@superpowers-dev": true
+    "superpowers@superpowers-dev": true,
+    "warden@warden": true
   },
   "extraKnownMarketplaces": {
     "diagram-design": {

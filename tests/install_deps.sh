@@ -21,6 +21,7 @@ log=$(cat "$WARDEN_STUB_LOG")
 # REQ-2.1
 assert_contains "$log" "claude plugin marketplace add $REPO_DIR/plugins/superpowers"
 # REQ-2.2
+assert_contains "$log" "claude plugin marketplace add $REPO_DIR/plugins/warden"
 assert_contains "$log" "claude plugin marketplace add cathrynlavery/diagram-design"
 # REQ-2.4
 assert_file "$HOME/bin/claude-context-monitor"
@@ -101,6 +102,7 @@ assert_contains "$out" "would fetch: the latest stigsb/claude-context-monitor re
 assert_contains "$out" "would install: $HOME/bin/claude-context-monitor"
 assert_contains "$out" "would install: $HOME/bin/claude-statusline"
 assert_contains "$out" "would register the vendored superpowers marketplace"
+assert_contains "$out" "would register the vendored warden marketplace"
 
 assert_absent "$HOME/bin"
 assert_absent "$HOME/.warden-backups"
@@ -141,13 +143,21 @@ assert_absent "$HOME/bin"
 
 # F32 regression. settings.json must not enable a plugin from a marketplace
 # install_plugins never registers. The two names are the marketplace ids the
-# two `claude plugin marketplace add` calls above produce: superpowers-dev is
+# `claude plugin marketplace add` calls above produce: superpowers-dev is
 # asserted against plugins/superpowers/.claude-plugin/marketplace.json in
-# tests/vendored_license.sh, and diagram-design is the repository's own name.
+# tests/vendored_license.sh, warden is asserted against
+# plugins/warden/.claude-plugin/marketplace.json just below, and
+# diagram-design is the repository's own name.
+warden_mk=$(jq -r '.name' "$REPO_DIR/plugins/warden/.claude-plugin/marketplace.json")
+if [ "$warden_mk" = "warden" ]; then
+  pass "plugins/warden/.claude-plugin/marketplace.json names the marketplace warden"
+else
+  fail "plugins/warden marketplace.json names '$warden_mk', not warden"
+fi
 for mk in $(jq -r '.enabledPlugins | keys[]' "$REPO_DIR/settings.json" \
             | sed 's/.*@//' | sort -u); do
   case "$mk" in
-    superpowers-dev|diagram-design)
+    superpowers-dev|diagram-design|"$warden_mk")
       pass "enabledPlugins names the registered marketplace $mk" ;;
     *)
       fail "settings.json enables a plugin from $mk, which install.sh does not register" ;;

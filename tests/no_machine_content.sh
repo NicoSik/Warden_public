@@ -34,7 +34,7 @@ check_pattern "agent hook block" '/agent-hooks/|EncodedCommand'
 # without naming anything private: it fails on any marketplace or plugin
 # this repository did not itself register.
 check_settings_allowlist() {
-  local settings="$REPO_DIR/settings.json" key ok=1
+  local settings="${1:-$REPO_DIR/settings.json}" key ok=1
 
   while IFS= read -r key; do
     [ -z "$key" ] && continue
@@ -50,9 +50,9 @@ check_settings_allowlist() {
   while IFS= read -r key; do
     [ -z "$key" ] && continue
     case "$key" in
-      diagram-design@diagram-design|superpowers@superpowers-dev) ;;
+      diagram-design@diagram-design|superpowers@superpowers-dev|warden@warden) ;;
       *)
-        fail "enabledPlugins enables $key, which is not one of the two allowed plugins"
+        fail "enabledPlugins enables $key, which is not one of the three allowed plugins"
         ok=0
         ;;
     esac
@@ -61,6 +61,19 @@ check_settings_allowlist() {
   [ "$ok" -eq 1 ] && pass "settings.json declares only the registered marketplaces and plugins"
 }
 check_settings_allowlist
+
+# The allowlist must still reject a key it does not know. Run it against a
+# temp copy of settings.json with an extra x@y key; the failure is captured,
+# not counted.
+allowlist_tmp=$(mktemp "${TMPDIR:-/tmp}/warden-settings.XXXXXX")
+jq '.enabledPlugins["x@y"] = true' "$REPO_DIR/settings.json" > "$allowlist_tmp"
+rejected=$( fail() { printf 'FAIL %s\n' "$*"; }; pass() { :; }
+            check_settings_allowlist "$allowlist_tmp" )
+rm -f "$allowlist_tmp"
+case "$rejected" in
+  *"enables x@y"*) pass "the allowlist rejects an extra x@y plugin key" ;;
+  *) fail "the allowlist accepted an extra x@y plugin key" ;;
+esac
 
 forbidden_files() {
   local f
