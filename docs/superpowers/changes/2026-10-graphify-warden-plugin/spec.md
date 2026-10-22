@@ -172,8 +172,9 @@ trace before it deletes the traces."*
 - **REQ-9.1** The pull request MUST link a run record in which read-order passes `both-at-least 4`
   with baseline `7ac111f` and the move commit as candidate.
 - **REQ-9.2** The same record MUST show read-order-heldout at `at-least 4` for the move commit.
-- **REQ-9.3** The pull request body MUST record a manual smoke check with both plugins installed
-  through the installer. The check MUST show that the `warden` `SessionStart` hook fires, that the
+- **REQ-9.3** The pull request body MUST record a manual smoke check with both plugins loaded from
+  the branch with `--plugin-dir`, on Nicolai's normal login. The installed copy of the Superpowers
+  plugin MUST be off for that session. The check MUST show that the `warden` `SessionStart` hook fires, that the
   `warden` `SubagentStart` hook fires in a subagent, that the Superpowers hook fires, and that no
   skill or hook name collides.
 - **REQ-9.4** The pull request body MUST state that the eval proof covers the merged plugin and

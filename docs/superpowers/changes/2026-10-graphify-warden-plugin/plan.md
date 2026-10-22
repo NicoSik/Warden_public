@@ -22,6 +22,17 @@
 - Python runs as `python3 -I`. No new dependency.
 - Every committed file passes `tests/no_machine_content.sh`.
 - Conventional commits. One commit per task at least.
+- The `warden` plugin layout is fixed. Every task builds against exactly these paths:
+
+  | Path | Content |
+  |---|---|
+  | `plugins/warden/.claude-plugin/plugin.json` | `{"name": "warden", ...}` |
+  | `plugins/warden/.claude-plugin/marketplace.json` | marketplace `name: "warden"`, one plugin `name: "warden"`, `source: "./"` |
+  | `plugins/warden/hooks/hooks.json` | `SessionStart` entry (matcher copied from Superpowers) with command `"${CLAUDE_PLUGIN_ROOT}/hooks/code-map" SessionStart`; `SubagentStart` entry, no matcher, command `"${CLAUDE_PLUGIN_ROOT}/hooks/code-map" SubagentStart` |
+  | `plugins/warden/hooks/code-map` | executable bash script; reads `code-map.md` from `$(dirname "$0")` |
+  | `plugins/warden/hooks/code-map.md` | the rule text |
+
+  The `enabledPlugins` key is `warden@warden`. `plugins/warden/` holds no other file.
 
 ## File map
 
@@ -141,11 +152,12 @@ Test command: `bash tests/behavior_harness.sh record_grading`.
 **Model:** `sonnet` (standard tier).
 
 **Interfaces:**
+- Consumes: the fixed `warden` layout in Global Constraints. The merge copies `plugins/warden/hooks/code-map` and `plugins/warden/hooks/code-map.md`, and it appends the two entries of `plugins/warden/hooks/hooks.json`. It ignores `plugins/warden/.claude-plugin/`.
 - Produces: stub env `STUB_SNAPSHOT_DIR`. When it is set, the stub copies the evaluated plugin directory (the positional target after `eval`) to `$STUB_SNAPSHOT_DIR/call-<n>/` before it writes results.
 
 **Brief:** Archive `plugins/` for each arm. When the arm has `plugins/warden`, copy every file of `plugins/warden/hooks/` except `hooks.json` into the scratch `plugins/superpowers/hooks/`, and append each `warden` hook entry to the matching event array of the scratch `hooks.json`. If a copied file already exists, exit 2 with `merge collision: <path>`. When the arm has no `plugins/warden`, the scratch tree is the same as today. Document the merge and its limit (the proof covers the merged plugin, not the real install) in `tests/behavior/README.md`.
 
-Arm commits for the tests: build them with `git commit-tree` from a temporary `GIT_INDEX_FILE`, starting from `7ac111f`'s tree, with no ref. One adds a minimal `plugins/warden` (hooks.json with both events, a `code-map` script, `code-map.md`). One also adds `plugins/warden/hooks/run-hook.cmd`, which collides.
+Arm commits for the tests: build them with `git commit-tree` from a temporary `GIT_INDEX_FILE`, starting from `7ac111f`'s tree, with no ref. One adds the five files of the fixed `warden` layout, with a one-line `code-map.md` and a `code-map` script that prints it. This keeps Task 3 independent of Task 1. One also adds `plugins/warden/hooks/run-hook.cmd`, which collides.
 
 New `runner.sh` cases assert:
 1. Old arm (`7ac111f`): the snapshot has the same file list and the same `hooks.json` as `git archive 7ac111f plugins/superpowers`.
@@ -205,9 +217,12 @@ Test command: `bash tests/behavior_harness.sh runner`.
 - Modify: `install.sh` (`install_plugins`), `uninstall.sh` (the removal message), `settings.json` (`enabledPlugins`), `README.md` (marketplace row, file table)
 - Modify: `tests/install_deps.sh`, `tests/uninstall_restores.sh`, `tests/no_machine_content.sh` (`check_settings_allowlist`), `tests/readme_sections.sh` if it pins the file table
 
-**Depends on:** none
+**Depends on:** 1. The tests read `plugins/warden/.claude-plugin/marketplace.json`, which Task 1 creates.
 
 **Model:** `sonnet` (standard tier).
+
+**Interfaces:**
+- Consumes: the fixed `warden` layout in Global Constraints: marketplace id `warden` from `plugins/warden/.claude-plugin/marketplace.json`, and `enabledPlugins` key `warden@warden`.
 
 **Brief:** Register `plugins/warden` the same way as `plugins/superpowers`, enable `warden@warden`, print `claude plugin marketplace remove warden` in the uninstall message, and describe the plugin in `README.md`. Tests assert:
 1. `install_deps.sh`: the install log contains `claude plugin marketplace add $REPO_DIR/plugins/warden`, and the dry run says it would register the warden marketplace.
@@ -326,22 +341,23 @@ read-order-heldout - <head sha> at-least 4
 
 **Model:** session.
 
-**Brief:** Install into a throwaway home, never the real `~/.claude`, `~/bin` or `~/.local/bin`. The installer writes to `$HOME/bin` and `$HOME/.local/bin`, so `HOME` is overridden too. `--skip-plugin-hook` keeps the installer out of this repository's shared `.git/hooks`.
+**Brief:** Use Nicolai's normal login. Create no new token, key or login. Load both plugins from this worktree with `--plugin-dir`. The installed `superpowers@superpowers-dev` reads from the main checkout, which still carries the Code Map. The session therefore disables it with `--settings`, so the Code Map can only come from `warden`. Installer registration is proved by Task 5's tests, not here.
 
 **Steps:**
-- [ ] Run `HOME=<scratchpad>/smoke-home CLAUDE_CONFIG_DIR=<scratchpad>/smoke-home/.claude ./install.sh --skip-plugin-hook` from this worktree.
-- [ ] In a scratch repo with `graphify-out/graph.json`, run one `claude -p` session under the same `HOME` and `CLAUDE_CONFIG_DIR` that starts one `general-purpose` subagent.
-- [ ] From the transcripts, show: the Superpowers `SessionStart` hook ran, the `warden` `SessionStart` hook ran, the `warden` `SubagentStart` hook ran in the subagent, and `hook_success` has no error.
-- [ ] Run `claude plugin list` under the same config and show no duplicate skill or hook names.
-- [ ] If the throwaway config cannot log in, stop and hand Nicolai the exact commands.
+- [ ] Make a scratch test repo in the scratchpad: `git init`, one source file, and `graphify update .` so `graphify-out/graph.json` exists.
+- [ ] From the test repo, run one `claude -p` session with `--plugin-dir <worktree>/plugins/superpowers --plugin-dir <worktree>/plugins/warden --settings '{"enabledPlugins":{"superpowers@superpowers-dev":false}}'` and a prompt that starts one `general-purpose` subagent.
+- [ ] From the main transcript, show `hook_success` for the Superpowers `SessionStart` hook and for the `warden` `SessionStart` hook, and show that the injected Superpowers text has no `## Code Map` section.
+- [ ] From the subagent transcript, show `hook_success` for `SubagentStart` and the `## Code Map` text in its context.
+- [ ] Show no duplicate skill names and no hook error in either transcript.
+- [ ] Fallback, only if this cannot show both hooks firing: repeat with `HOME=<scratchpad>/smoke-home CLAUDE_CONFIG_DIR=<scratchpad>/smoke-home/.claude ./install.sh --skip-plugin-hook`. If that home cannot log in, stop and hand Nicolai the exact commands.
 - [ ] Write the result and the merged-plugin limit into the PR body draft.
 
 ## Waves
 
 | Wave | Tasks | Why |
 |---|---|---|
-| 1 | 1, 2, 3, 5 | Each task owns different files and depends on nothing. |
-| 2 | 4, 6 | Task 4 depends on Task 3 (`run-behavior`, `runner.sh`). Task 6 depends on Task 1. |
+| 1 | 1, 2, 3 | Each task owns different files and depends on nothing. Task 3 builds its own synthetic `warden` arms from the fixed layout. |
+| 2 | 4, 5, 6 | Task 4 depends on Task 3 (`run-behavior`, `runner.sh`). Tasks 5 and 6 depend on Task 1. The three tasks own different files. |
 | 3 | 7 | Live run. It depends on Task 4. |
 | 4 | 8 | It depends on Task 2 (`record.py`) and on Task 7's field name. |
 | 5 | 9, 10 | Session tasks with no shared file. Both need the code complete. |
