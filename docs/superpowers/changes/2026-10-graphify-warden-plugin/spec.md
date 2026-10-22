@@ -1,6 +1,6 @@
 # Spec: graphify-warden-plugin
 
-Intent: `intent.md`. Date: 2026-10-22. Status: draft.
+Intent: `intent.md`. Date: 2026-10-22. Status: approved.
 
 ## Summary
 
@@ -32,15 +32,18 @@ Size: 9 requirements from 15 intent items.
 
 **REQ-1** The `warden` plugin MUST give the rule text to the main session when a session starts.
 
-- **REQ-1.1** The `warden` plugin MUST fire on the same session-start sources as the Superpowers
-  hook: `startup`, `clear` and `compact`.
+- **REQ-1.1** The `warden` session-start matcher MUST be the identical string to the Superpowers
+  session-start matcher in `plugins/superpowers/hooks/hooks.json`. Today that string is
+  `startup|clear|compact`.
 - **REQ-1.2** The injected context MUST equal the rule text byte for byte.
 - **REQ-1.3** The `warden` plugin MUST inject the rule text whether `graphify-out/graph.json`
   exists or not. The rule text states its own condition.
 
 *Proof: `tests/warden_hooks.sh` runs the session-start hook script and asserts that
 `hookSpecificOutput.hookEventName` is `SessionStart` and that `additionalContext` equals the rule
-text file. The manual smoke check in REQ-9 shows the hook firing in a real session.*
+text file. It also asserts that the two `SessionStart` matcher strings are equal, so a matcher
+change in one plugin fails the test. The manual smoke check in REQ-9 shows the hook firing in a
+real session.*
 *Source: decision A1. Constraint "The Code Map text the agent sees does not change in wording".*
 
 **REQ-2** The `warden` plugin MUST give the rule text to every subagent when the subagent starts.
@@ -208,10 +211,11 @@ applies.
 ## Open questions carried from intent
 
 - **Answered.** How the rule reaches subagents. REQ-2 answers it with a `SubagentStart` hook.
-- **Still open, answered by the plan's first task.** The real `claude plugin eval` traces were
-  deleted, so nobody knows where a trace stores the model ID. The plan starts with one live
-  run that keeps its trace and names the field. REQ-8.5 depends on it. Owner: Nicolai approves
-  the run, because it uses plan usage.
+- **Approved 2026-10-22, answered during the build.** The real `claude plugin eval` traces were
+  deleted, so nobody knows where a trace stores the model ID. After REQ-8.1 is built, one live
+  wrapper run with one case and one run keeps its trace. That run confirms that REQ-8.1 copies
+  the trace before `cleanup()`, and it names the model ID field. REQ-8.5 is built after it.
+- **Answered 2026-10-22.** The retention count is 20 run folders.
 
 ## Design notes
 
@@ -221,5 +225,5 @@ applies.
   `both-at-least` takes the `at-least` branch.
 - The trace cache already holds `gate.sh`, `gate-1.log` and `gate-heldout.log`. REQ-8.4 protects
   them.
-- The retention count of 20 is a choice made in this spec. The intent allowed a run count or a
-  maximum age.
+- The retention count of 20 is a choice made in this spec and approved on 2026-10-22. The intent
+  allowed a run count or a maximum age.
