@@ -201,5 +201,26 @@ if [ "$got" = "- Model: unknown (no model ID in traces)" ] && [ "$got_empty" = "
   pass "12 no ID (or no raw dir): the pin reads unknown"
 else fail "12 got '$got' / '$got_empty'"; fi
 
+# 13. both-at-least 4: a baseline with 4 graph-first hits and 1 errored run FAILs, candidate 5/5 PASSes, exit 1.
+synth 4 "$T/ro4.json"
+python3 -I -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+r = d["cases"][0]["arms"]["with"]
+r[4]["error"] = "stub failure"
+json.dump(d, open(sys.argv[2], "w"))' "$T/ro4.json" "$T/ro4e.json"
+python3 -I -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+r = d["cases"][0]["arms"]["with"]
+r[4]["tracePath"] = r[0]["tracePath"]
+json.dump(d, open(sys.argv[2], "w"))' "$T/ro4.json" "$T/ro5.json"
+conf_line "$T/f.conf" read-order "$BASE" "$CAND" both-at-least 4
+run_record "$REC" "$T/f.conf" "$BASE=$T/ro4e.json" "$CAND=$T/ro5.json"
+if [ "$RC" -eq 1 ] && row_has read-order baseline "$BASE" "4/5 (1 errored)" "graph-first >= 4" FAIL \
+   && row_has read-order candidate "$CAND" 5/5 "graph-first >= 4" PASS; then
+  pass "13 both-at-least 4, baseline 4 hits + 1 errored: baseline row FAIL, exit 1"
+else fail "13 rc=$RC: $(printf '%s\n' "$OUT" | head -n 5) $ERR"; fi
+
 [ ! -d "$HERE/../lib/__pycache__" ] || fail "record.py left a __pycache__ beside the grader"
 harness_exit
