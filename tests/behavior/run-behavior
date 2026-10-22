@@ -29,10 +29,12 @@ done
 case "$RUNS" in ''|*[!0-9]*|0) usage ;; esac
 [ -f "$CONF" ] || { echo "arms file not found: $CONF" >&2; exit 2; }
 
+CHECK=(python3 -I "$HERE/lib/merge_check.py")
 MERGE_STUB=()
 if [ -n "${WARDEN_BEHAVIOR_MERGE_CHECK:-}" ]; then
   echo "warning: WARDEN_BEHAVIOR_MERGE_CHECK is set; this run is a test run and grades nothing" >&2
   MERGE_STUB=(--merge-check-stub)
+  CHECK=("$WARDEN_BEHAVIOR_MERGE_CHECK")
 fi
 
 die3() { echo "preflight failed: $*" >&2; exit 3; }
@@ -145,11 +147,7 @@ with open(dst, "w") as f:
 PY
     fi
     # The merge must leave every warden file in the scratch plugin. WARDEN_BEHAVIOR_MERGE_CHECK is a test seam.
-    if [ -n "${WARDEN_BEHAVIOR_MERGE_CHECK:-}" ]; then
-      "$WARDEN_BEHAVIOR_MERGE_CHECK" "$wsrc" "$sdst" || exit 2
-    else
-      python3 -I "$HERE/lib/merge_check.py" "$wsrc" "$sdst" || exit 2
-    fi
+    "${CHECK[@]}" "$wsrc" "$sdst" || exit 2
   fi
   dest="$scratch/plugins/superpowers/warden-evals"
   mkdir -p "$dest"

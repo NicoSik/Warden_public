@@ -275,7 +275,7 @@ else fail "15e skill collision rc=$rc evals=$(evals): $out"; fi
 
 # 15f. the wrapper acts on the checker's exit code. WARDEN_BEHAVIOR_MERGE_CHECK replaces lib/merge_check.py.
 printf '%s\n' '#!/usr/bin/env bash' 'echo "merge incomplete: x" >&2' 'exit 2' > "$T/mc-fail"
-printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$T/mc-ok"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n%s\n" "$1" "$2" >> "$MC_ARGS_LOG"' 'exit 0' > "$T/mc-ok"
 chmod +x "$T/mc-fail" "$T/mc-ok"
 out=$(WARDEN_BEHAVIOR_MERGE_CHECK="$T/mc-fail" snaprun "$T/arms15b.conf"); rc=$?
 if [ "$rc" -eq 2 ] && [ "$(evals)" -eq 0 ] && printf '%s' "$out" | grep -qF 'merge incomplete: x'; then
@@ -283,14 +283,17 @@ if [ "$rc" -eq 2 ] && [ "$(evals)" -eq 0 ] && printf '%s' "$out" | grep -qF 'mer
 else fail "15f failing merge check rc=$rc evals=$(evals): $out"; fi
 
 # 15g. test override: warning, STUB pin, STUB rows, never PASS, exit 1
-out=$(WARDEN_BEHAVIOR_MERGE_CHECK="$T/mc-ok" snaprun "$T/arms15b.conf"); rc=$?
+rm -f "$T/mc-args.log"
+out=$(MC_ARGS_LOG="$T/mc-args.log" WARDEN_BEHAVIOR_MERGE_CHECK="$T/mc-ok" snaprun "$T/arms15b.conf"); rc=$?
 rec=$(ls "$T/runs"/*.md 2>/dev/null | head -n1)
 rows=$(grep -E '^\| setup-planning ' "$rec" 2>/dev/null)
 if [ "$rc" -eq 1 ] && [ -n "$rec" ] && [ "$(evals)" -eq 1 ] \
    && printf '%s' "$out" | grep -qF 'warning: WARDEN_BEHAVIOR_MERGE_CHECK is set; this run is a test run and grades nothing' \
    && grep -qF -- '- Merge check: STUB' "$rec" \
    && [ -n "$rows" ] && ! printf '%s' "$rows" | grep -q 'PASS' \
-   && [ "$(printf '%s\n' "$rows" | grep -vc '| STUB |$')" -eq 0 ]; then
+   && [ "$(printf '%s\n' "$rows" | grep -vc '| STUB |$')" -eq 0 ] \
+   && a1=$(sed -n 1p "$T/mc-args.log") && a2=$(sed -n 2p "$T/mc-args.log") \
+   && [ "${a1%/plugins/warden}" != "$a1" ] && [ "${a2%/plugins/superpowers}" != "$a2" ] && [ "$a1" != "$a2" ]; then
   pass "15g merge check override: warning, STUB pin, STUB rows, no PASS, exit 1"
 else fail "15g override rc=$rc evals=$(evals) rows=$rows: $out"; fi
 
