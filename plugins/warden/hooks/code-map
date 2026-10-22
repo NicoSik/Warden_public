@@ -11,9 +11,10 @@ esac
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # The trailing x keeps the final newlines that $(...) would strip.
-content=$(cat "${SCRIPT_DIR}/code-map.md"; printf x)
+content=$(cat "${SCRIPT_DIR}/code-map.md" && printf x) || exit 1
 content="${content%x}"
 
+# Verbatim copy of escape_for_json in plugins/superpowers/hooks/session-start; apply a fix to both.
 escape_for_json() {
     local s="$1"
     s="${s//\\/\\\\}"

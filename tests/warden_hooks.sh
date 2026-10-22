@@ -46,4 +46,15 @@ for args in "" "NoSuchEvent"; do
   fi
 done
 
+# A missing rule file must fail loud, not inject an empty rule.
+mkdir -p "$HARNESS_TMP/norule"
+cp "$HOOK" "$HARNESS_TMP/norule/code-map"
+rc=0
+stdout=$("$HARNESS_TMP/norule/code-map" SessionStart 2>/dev/null) || rc=$?
+if [ "$rc" -ne 0 ] && [ -z "$stdout" ]; then
+  pass "missing code-map.md exits non-zero with empty stdout"
+else
+  fail "missing code-map.md must exit non-zero with empty stdout (rc=$rc)"
+fi
+
 harness_exit
