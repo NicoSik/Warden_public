@@ -40,6 +40,14 @@ Log in with a subscription. `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` must 
 The record goes to `docs/superpowers/changes/2026-10-rerunnable-behavior-baseline/runs/<UTC date>-<id>.md`.
 Raw result JSON is kept outside the repo in `~/.cache/warden-behavior/<id>/`.
 
+The trace cache is `~/.cache/warden-behavior/`. Set `WARDEN_BEHAVIOR_RAW_DIR` to move it. Before the cost
+prompt the wrapper checks the nearest existing folder of the trace cache. If that folder is inside a git
+work tree, the wrapper exits 2 and names `WARDEN_BEHAVIOR_RAW_DIR`. `record.py` deletes the eval temp
+folders, so before it runs the wrapper copies every trace that the results name to
+`<id>/traces/<case>/<arm-sha7>/run-<i>.jsonl`. After the record is written, the wrapper deletes the oldest
+run folders (by modification time) until 20 remain. It touches only entries whose name is six lowercase
+hexadecimal characters.
+
 ## Cost
 
 Before it starts, the wrapper prints the agent count, the model and an estimate, labelled

@@ -38,6 +38,14 @@ GRAPHIFY_VERSION=$(graphify --version 2>/dev/null | head -n1) || true
 [ -z "${ANTHROPIC_API_KEY:-}" ] || die3 "ANTHROPIC_API_KEY is set; unset it so the run uses your login"
 [ -z "${ANTHROPIC_AUTH_TOKEN:-}" ] || die3 "ANTHROPIC_AUTH_TOKEN is set; unset it so the run uses your login"
 
+# The trace cache must not sit inside a git work tree. Check its nearest existing ancestor.
+guard_dir="$RAW_BASE"
+while [ ! -d "$guard_dir" ] && [ "$guard_dir" != "/" ] && [ "$guard_dir" != "." ]; do guard_dir=$(dirname "$guard_dir"); done
+if git -C "$guard_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "trace cache $RAW_BASE is inside a git work tree; set WARDEN_BEHAVIOR_RAW_DIR to a folder outside any repository" >&2
+  exit 2
+fi
+
 resolve() { git -C "$REPO" rev-parse --verify -q "$1^{commit}" 2>/dev/null; }
 FETCHED=0
 resolve_or_fetch() {
@@ -156,6 +164,18 @@ for p in parts:
     merged["partial"] = bool(merged.get("partial")) or bool(d.get("partial"))
 json.dump(merged, open(out, "w"))
 PY
+  # record.py deletes the eval temp folders, so copy each trace into the trace cache first.
+  python3 -I - "$res" "$RAW_BASE/$ID/traces" "$(printf '%s' "$sha" | cut -c1-7)" <<'PY' || { echo "error: could not copy traces for $sha" >&2; exit 2; }
+import json, os, shutil, sys
+res, dest, arm = sys.argv[1:4]
+for c in json.load(open(res)).get("cases", []):
+    for i, r in enumerate((c.get("arms") or {}).get("with") or [], 1):
+        tp = r.get("tracePath")
+        if tp and os.path.isfile(tp):
+            d = os.path.join(dest, c["name"], arm)
+            os.makedirs(d, exist_ok=True)
+            shutil.copyfile(tp, os.path.join(d, "run-%d.jsonl" % i))
+PY
   RESULT_ARGS+=(--result "$sha=$res")
 done
 
@@ -168,5 +188,14 @@ rc=$?
 # Keep the raw results outside the repo.
 if [ "$rc" -le 1 ]; then
   mkdir -p "$RAW_BASE/$ID" && cp "$WORK"/result-[0-9].json "$WORK"/result-[0-9][0-9].json "$RAW_BASE/$ID/" 2>/dev/null || true
+  # Retention: keep the newest 20 run folders. Only six-hex-character folders are touched.
+  python3 -I - "$RAW_BASE" <<'PY'
+import os, re, shutil, sys
+base = sys.argv[1]
+runs = [e for e in os.scandir(base) if re.fullmatch(r"[0-9a-f]{6}", e.name) and e.is_dir(follow_symlinks=False)]
+runs.sort(key=lambda e: e.stat(follow_symlinks=False).st_mtime)
+for e in runs[:-20]:
+    shutil.rmtree(e.path, ignore_errors=True)
+PY
 fi
 exit "$rc"

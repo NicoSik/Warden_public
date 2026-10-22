@@ -249,6 +249,49 @@ if [ "$rc" -eq 2 ] && [ "$(evals)" -eq 0 ] && printf '%s' "$out" | grep -qF 'mer
   pass "15c collision: exit 2, names hooks/run-hook.cmd, no eval"
 else fail "15c collision rc=$rc evals=$(evals): $out"; fi
 
+# 16. trace cache: copy, guard, retention
+printf 'read-order - %s at-least 1\n' "$OLD" > "$T/arms16.conf"
+ARM16=$(printf '%s' "$OLD" | cut -c1-7)
+
+# 16a. two runs leave two trace files under traces/<case>/<arm-sha7>/
+reset
+out=$(PATH=$GOODPATH bash "$RUN" --yes --runs 2 --arms "$T/arms16.conf" 2>&1); rc=$?
+rid=$(ls "$WARDEN_BEHAVIOR_RAW_DIR" | head -n1)
+td="$WARDEN_BEHAVIOR_RAW_DIR/$rid/traces/read-order/$ARM16"
+if [ "$(ls "$td" 2>/dev/null | wc -l | tr -d ' ')" -eq 2 ] && [ -s "$td/run-1.jsonl" ] && [ -s "$td/run-2.jsonl" ] \
+   && grep -q '"tool_use"' "$td/run-1.jsonl" && grep -q '"tool_use"' "$td/run-2.jsonl"; then
+  pass "16a run folder holds 2 trace files with stub trace content"
+else fail "16a traces missing (rc=$rc dir=$td): $(ls -R "$WARDEN_BEHAVIOR_RAW_DIR" 2>&1 | head -n8)"; fi
+
+# 16b. trace cache inside a git work tree: exit 2 before any eval, names the variable
+reset
+mkdir -p "$T/gitcache" && git init -q "$T/gitcache"
+out=$(PATH=$GOODPATH WARDEN_BEHAVIOR_RAW_DIR="$T/gitcache/sub/raw" bash "$RUN" --yes --runs 1 --arms "$T/arms16.conf" 2>&1); rc=$?
+if [ "$rc" -eq 2 ] && [ "$(evals)" -eq 0 ] && printf '%s' "$out" | grep -qF 'WARDEN_BEHAVIOR_RAW_DIR'; then
+  pass "16b cache inside a git work tree: exit 2, names variable, no eval"
+else fail "16b guard rc=$rc evals=$(evals): $out"; fi
+rm -rf "$T/gitcache"
+
+# 16c. 21 old run folders plus one new run: 20 remain, oldest gone; gate.sh and notes survive
+reset
+i=0
+while [ "$i" -lt 21 ]; do
+  d=$(printf '%06x' $((0xa00000 + i)))
+  mkdir -p "$WARDEN_BEHAVIOR_RAW_DIR/$d"
+  touch -t "$(printf '20200101%02d00' $((i + 1)))" "$WARDEN_BEHAVIOR_RAW_DIR/$d"
+  i=$((i + 1))
+done
+printf 'x\n' > "$WARDEN_BEHAVIOR_RAW_DIR/gate.sh"; mkdir -p "$WARDEN_BEHAVIOR_RAW_DIR/notes"
+touch -t 201901010000 "$WARDEN_BEHAVIOR_RAW_DIR/gate.sh" "$WARDEN_BEHAVIOR_RAW_DIR/notes"
+out=$(PATH=$GOODPATH bash "$RUN" --yes --runs 1 --arms "$T/arms16.conf" 2>&1); rc=$?
+nrun=$(ls "$WARDEN_BEHAVIOR_RAW_DIR" | grep -c '^[0-9a-f]\{6\}$')
+if [ "$nrun" -eq 20 ] && [ ! -e "$WARDEN_BEHAVIOR_RAW_DIR/a00000" ] && [ ! -e "$WARDEN_BEHAVIOR_RAW_DIR/a00001" ] && [ -d "$WARDEN_BEHAVIOR_RAW_DIR/a00002" ]; then
+  pass "16c retention keeps 20 run folders, oldest two gone"
+else fail "16c retention nrun=$nrun rc=$rc: $(ls "$WARDEN_BEHAVIOR_RAW_DIR" | tr '\n' ' ')"; fi
+if [ -f "$WARDEN_BEHAVIOR_RAW_DIR/gate.sh" ] && [ -d "$WARDEN_BEHAVIOR_RAW_DIR/notes" ]; then
+  pass "16d gate.sh and notes survive retention"
+else fail "16d non-run entries removed: $(ls "$WARDEN_BEHAVIOR_RAW_DIR" | tr '\n' ' ')"; fi
+
 # 8. repo untouched, no scratch left
 STATUS_AFTER=$(git status --porcelain)
 [ "$STATUS_BEFORE" = "$STATUS_AFTER" ] && pass "8 git status unchanged" || fail "8 git status changed"
