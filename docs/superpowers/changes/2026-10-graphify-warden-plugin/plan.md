@@ -289,7 +289,7 @@ Test command: `bash tests/run.sh`.
 **Model:** `sonnet` (cheap tier mapped to sonnet). One production file.
 
 **Interfaces:**
-- Consumes: the trace layout from Task 4 (`<raw-dir>/traces/...`) and the JSON path that Task 7 found.
+- Consumes: the trace layout from Task 4 (`<raw-dir>/traces/<case>/<arm-sha7>/run-<i>.jsonl`) and the JSON path that Task 7 found: `message.model` on lines whose `type` is `assistant` (live run `d60306`, 2026-10-22: 19 lines, value `claude-opus-5-5`). Read only that path. A trace line that is not valid JSON is skipped.
 
 **Brief:** `record.py` reads the model ID from every kept trace under `--raw-dir`. The `- Model:` pin lists each distinct ID, sorted. With no ID, it writes `unknown (no model ID in traces)`. Tests assert:
 1. One stub trace with ID `claude-test-1`: the pin reads `claude-test-1`.
