@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Prints the Code Map rule as hook context. Usage: code-map SessionStart|SubagentStart
+set -euo pipefail
+
+event="${1:-}"
+case "$event" in
+  SessionStart|SubagentStart) ;;
+  *) echo "code-map: unknown or missing event '${event}'" >&2; exit 2 ;;
+esac
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# The trailing x keeps the final newlines that $(...) would strip.
+content=$(cat "${SCRIPT_DIR}/code-map.md"; printf x)
+content="${content%x}"
+
+escape_for_json() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\r'/\\r}"
+    s="${s//$'\t'/\\t}"
+    printf '%s' "$s"
+}
+
+printf '{"hookSpecificOutput":{"hookEventName":"%s","additionalContext":"%s"}}\n' "$event" "$(escape_for_json "$content")"
