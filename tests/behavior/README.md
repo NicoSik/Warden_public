@@ -27,13 +27,22 @@ terminal under `first commands: <case> / <arm> / run <i>`. This text never goes 
 
 Each arm comes from `git archive <ref> plugins/superpowers` into a scratch directory. The run never
 checks out a ref and never touches your project, your `~/.claude`, or the git state of this repo.
-`claude plugin eval` loads one plugin. When an arm has `plugins/warden`, the wrapper also archives
-`plugins/warden/hooks` and merges it into the scratch Superpowers plugin. It copies every file of
-`plugins/warden/hooks/` except `hooks.json` into the scratch `plugins/superpowers/hooks/`, and appends each
-`warden` hook entry to the matching event array of the scratch `hooks.json`. If a copied file already
-exists, the wrapper exits 2 with `merge collision: <path>` and runs no eval. An arm without
-`plugins/warden` builds the same scratch tree as before. Limit: the proof covers the merged plugin, not
-the real install of two plugins side by side.
+`claude plugin eval` loads one plugin. When an arm has `plugins/warden`, the wrapper archives the whole
+plugin and merges it into the scratch Superpowers plugin. The merge copies every file of `plugins/warden`
+except its manifest (`.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`) to the same relative
+path in the scratch plugin, and appends each `warden` hook entry to the matching event array of the scratch
+`hooks/hooks.json`. Any other file in `plugins/warden/.claude-plugin/` makes the wrapper exit 2 with
+`unexpected warden manifest file: .claude-plugin/<name>`. If a copied file already exists, the wrapper exits 2
+with `merge collision: <path>`. After the merge, `lib/merge_check.py` checks that every copied file is in the
+scratch plugin, byte-equal. If not, the wrapper exits 2 with `merge incomplete: <path>`. Each of these stops
+the run before any eval. An arm without `plugins/warden` builds the same scratch tree as before. Limit: the
+proof covers the merged plugin, not the real install of two plugins side by side. In the merged arm a `warden`
+skill loads as `superpowers:<name>`. The setup grader counts Bash calls to `graphify-setup ... status`, so the
+name does not change its count. PR #2's smoke check covers the real `warden:<name>` load.
+
+Test-only override: `WARDEN_BEHAVIOR_MERGE_CHECK` replaces `lib/merge_check.py` with another command. The
+wrapper prints a warning, the record pins `- Merge check: STUB`, every result reads `STUB`, and the exit is 1,
+so a run with the override can never read as a pass. Never set it for a real run.
 
 Log in with a subscription. `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` must be unset.
 
