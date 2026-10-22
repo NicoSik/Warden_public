@@ -164,4 +164,15 @@ for mk in $(jq -r '.enabledPlugins | keys[]' "$REPO_DIR/settings.json" \
   esac
 done
 
+# REQ-4.2. The allowlist above only rejects unknown keys; this requires the
+# warden key itself.
+require_warden_enabled() {
+  jq -e '.enabledPlugins["warden@warden"] == true' "$1" >/dev/null 2>&1
+}
+if require_warden_enabled "$REPO_DIR/settings.json"; then
+  pass "settings.json enables warden@warden"
+else
+  fail "settings.json does not enable warden@warden"
+fi
+
 harness_exit
