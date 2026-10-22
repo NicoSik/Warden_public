@@ -29,6 +29,14 @@ done
 case "$RUNS" in ''|*[!0-9]*|0) usage ;; esac
 [ -f "$CONF" ] || { echo "arms file not found: $CONF" >&2; exit 2; }
 
+CHECK=(python3 -I "$HERE/lib/merge_check.py")
+MERGE_STUB=()
+if [ -n "${WARDEN_BEHAVIOR_MERGE_CHECK:-}" ]; then
+  echo "warning: WARDEN_BEHAVIOR_MERGE_CHECK is set; this run is a test run and grades nothing" >&2
+  MERGE_STUB=(--merge-check-stub)
+  CHECK=("$WARDEN_BEHAVIOR_MERGE_CHECK")
+fi
+
 die3() { echo "preflight failed: $*" >&2; exit 3; }
 
 # Preflight, in order.
@@ -105,20 +113,28 @@ for sha in $REFS; do
   scratch="$WORK/arm-$n"
   mkdir -p "$scratch"
   git -C "$REPO" archive "$sha" plugins/superpowers | tar -x -C "$scratch" || { echo "git archive failed for $sha" >&2; exit 2; }
-  # plugin eval loads one plugin. When the arm has plugins/warden, merge its hooks into the scratch Superpowers plugin.
-  if git -C "$REPO" cat-file -e "$sha:plugins/warden/hooks" 2>/dev/null; then
+  # plugin eval loads one plugin. When the arm has plugins/warden, merge the whole plugin, minus its two manifest files, into the scratch Superpowers plugin.
+  if git -C "$REPO" cat-file -e "$sha:plugins/warden" 2>/dev/null; then
     wtmp="$WORK/warden-$n"
     mkdir -p "$wtmp"
-    git -C "$REPO" archive "$sha" plugins/warden/hooks | tar -x -C "$wtmp" || { echo "git archive failed for $sha" >&2; exit 2; }
-    shooks="$scratch/plugins/superpowers/hooks"
-    mkdir -p "$shooks"
+    git -C "$REPO" archive "$sha" plugins/warden | tar -x -C "$wtmp" || { echo "git archive failed for $sha" >&2; exit 2; }
+    wsrc="$wtmp/plugins/warden"
+    sdst="$scratch/plugins/superpowers"
+    # Only the two manifest files may sit in .claude-plugin/. Any other file there stops the run.
+    if [ -d "$wsrc/.claude-plugin" ]; then
+      while IFS= read -r f; do
+        case "$f" in plugin.json|marketplace.json) ;; *) echo "unexpected warden manifest file: .claude-plugin/$f" >&2; exit 2 ;; esac
+      done < <(cd "$wsrc/.claude-plugin" && find . -type f | sed 's|^\./||' | sort)
+    fi
     while IFS= read -r f; do
-      [ "$f" = hooks.json ] && continue
-      if [ -e "$shooks/$f" ]; then echo "merge collision: hooks/$f" >&2; exit 2; fi
-      mkdir -p "$(dirname "$shooks/$f")"
-      cp -p "$wtmp/plugins/warden/hooks/$f" "$shooks/$f"
-    done < <(cd "$wtmp/plugins/warden/hooks" && find . -type f | sed 's|^\./||' | sort)
-    python3 -I - "$shooks/hooks.json" "$wtmp/plugins/warden/hooks/hooks.json" <<'PY' || { echo "error: could not merge warden hooks.json for $sha" >&2; exit 2; }
+      case "$f" in .claude-plugin/plugin.json|.claude-plugin/marketplace.json|hooks/hooks.json) continue ;; esac
+      if [ -e "$sdst/$f" ]; then echo "merge collision: $f" >&2; exit 2; fi
+      mkdir -p "$(dirname "$sdst/$f")"
+      cp -p "$wsrc/$f" "$sdst/$f"
+    done < <(cd "$wsrc" && find . -type f | sed 's|^\./||' | sort)
+    if [ -f "$wsrc/hooks/hooks.json" ]; then
+      mkdir -p "$sdst/hooks"
+      python3 -I - "$sdst/hooks/hooks.json" "$wsrc/hooks/hooks.json" <<'PY' || { echo "error: could not merge warden hooks.json for $sha" >&2; exit 2; }
 import json, sys
 dst, src = sys.argv[1:3]
 d = json.load(open(dst))
@@ -129,6 +145,9 @@ with open(dst, "w") as f:
     json.dump(d, f, indent=2)
     f.write("\n")
 PY
+    fi
+    # The merge must leave every warden file in the scratch plugin. WARDEN_BEHAVIOR_MERGE_CHECK is a test seam.
+    "${CHECK[@]}" "$wsrc" "$sdst" || exit 2
   fi
   dest="$scratch/plugins/superpowers/warden-evals"
   mkdir -p "$dest"
@@ -182,7 +201,7 @@ done
 FIXTURE_HASH=$(git -C "$REPO" rev-parse HEAD:tests/behavior/evals/_fixture/storefront)
 python3 -I "$HERE/lib/record.py" --conf "$WORK/conf" --out-dir "$RECORD_DIR" --runs "$RUNS" \
   --graphify-version "$GRAPHIFY_VERSION" --fixture-hash "$FIXTURE_HASH" --id "$ID" \
-  --raw-dir "$RAW_BASE/$ID" "${RESULT_ARGS[@]}"
+  --raw-dir "$RAW_BASE/$ID" ${MERGE_STUB[@]+"${MERGE_STUB[@]}"} "${RESULT_ARGS[@]}"
 rc=$?
 
 # Keep the raw results outside the repo.

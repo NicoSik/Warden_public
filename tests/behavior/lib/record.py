@@ -2,10 +2,11 @@
 """Grade `claude plugin eval --json` results and write the run record.
 
 Usage: record.py --conf FILE --out-dir DIR --runs N --graphify-version V
-                 --fixture-hash H --id ID --result SHA=FILE [--result ...]
+                 --fixture-hash H --id ID [--merge-check-stub] --result SHA=FILE [--result ...]
 
 FILE lines of --conf: <case> <baseline-sha or -> <candidate-sha> <at-least|at-most|both-at-least> <count>.
 both-at-least gates the baseline arm too, so it needs a baseline sha.
+--merge-check-stub marks a test run: the record pins "Merge check: STUB", every result reads STUB, and the exit is 1.
 Exit: 0 all criteria met, 1 a candidate criterion failed, 2 bad or partial result.
 """
 import argparse
@@ -151,6 +152,7 @@ def main():
     ap.add_argument("--fixture-hash", required=True)
     ap.add_argument("--id", required=True)
     ap.add_argument("--raw-dir", default="")
+    ap.add_argument("--merge-check-stub", action="store_true")
     ap.add_argument("--result", action="append", default=[])
     a = ap.parse_args()
 
@@ -240,6 +242,8 @@ def main():
                 else:
                     verdict = "report only"
                     crit = "(%s %s %s)" % (what, op, count)
+                if a.merge_check_stub:
+                    verdict = "STUB"
                 rows.append((case, arm, sha, "%d/%d%s" % (hits, len(runs), " (%d errored)" % errored if errored else ""), crit, verdict))
 
         today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
@@ -262,6 +266,7 @@ def main():
             out.append("- Arm commit %s (%s)" % (s, "; ".join(roles)))
         out.append("- graphify --version: %s" % a.graphify_version)
         out.append("- Fixture tree hash: %s" % a.fixture_hash)
+        out.append("- Merge check: %s" % ("STUB" if a.merge_check_stub else "lib/merge_check.py"))
         out.append("- Runs per case and arm: %s" % a.runs)
         out.append("")
         out.append("## Results")
@@ -292,7 +297,7 @@ def main():
         print("record: " + path)
         if terminal:
             print("\n".join(terminal))
-        return 1 if failed else 0
+        return 1 if failed or a.merge_check_stub else 0
     finally:
         cleanup(results)
 

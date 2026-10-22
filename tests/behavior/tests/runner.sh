@@ -96,6 +96,7 @@ rec=$(ls "$T/runs"/*.md 2>/dev/null | head -n1)
 if [ -n "$rec" ]; then
   ok=1
   for p in 'Claude Code version' 'Model' 'graphify' 'Fixture tree hash' "$(git rev-parse c91be4c)" "$(git rev-parse 5a972be)" "$(git rev-parse 8199034)" '2.1.305' 'claude-stub-1' '9.9.9-stub' "$(git rev-parse HEAD:tests/behavior/evals/_fixture/storefront)" \
+    '- Merge check: lib/merge_check.py' \
     'Runs measure attempts. Inside the eval sandbox on macOS, git, the home-installed Graphify binary, and `.git/config` writes are blocked, so `graphify-setup` and `graphify query` fail inside a run.'; do
     grep -qF -- "$p" "$rec" || { ok=0; echo "    missing: $p"; }
   done
@@ -196,7 +197,10 @@ printf '%s\n' '{"name": "warden", "plugins": [{"name": "warden", "source": "./"}
 printf '%s\n' 'Code map rule line.' > "$W15/code-map.md"
 printf '%s\n' '#!/usr/bin/env bash' 'cat "$(dirname "$0")/code-map.md"' > "$W15/code-map"
 printf '%s\n' 'collides' > "$W15/run-hook.cmd"
-mkarm() { # mkarm <collide 0|1> -> prints commit sha
+printf '%s\n' '# demo skill' > "$W15/demo-SKILL.md"
+printf '%s\n' '{"extra": true}' > "$W15/extra.json"
+printf '%s\n' '# not the real brainstorming skill' > "$W15/brainstorming-SKILL.md"
+mkarm() { # mkarm <plain|hooks|extra|skill> -> prints commit sha. hooks collides on hooks/run-hook.cmd, extra adds an unexpected manifest file, skill collides on skills/brainstorming/SKILL.md
   local idx="$W15/index-$1" blob
   rm -f "$idx"
   GIT_INDEX_FILE="$idx" git read-tree "$OLD" || return 1
@@ -206,14 +210,19 @@ mkarm() { # mkarm <collide 0|1> -> prints commit sha
   add hooks.json 100644 plugins/warden/hooks/hooks.json
   add code-map 100755 plugins/warden/hooks/code-map
   add code-map.md 100644 plugins/warden/hooks/code-map.md
-  [ "$1" = 1 ] && add run-hook.cmd 100644 plugins/warden/hooks/run-hook.cmd
+  add demo-SKILL.md 100644 plugins/warden/skills/demo/SKILL.md
+  [ "$1" = hooks ] && add run-hook.cmd 100644 plugins/warden/hooks/run-hook.cmd
+  [ "$1" = extra ] && add extra.json 100644 plugins/warden/.claude-plugin/extra.json
+  [ "$1" = skill ] && add brainstorming-SKILL.md 100644 plugins/warden/skills/brainstorming/SKILL.md
   local tree; tree=$(GIT_INDEX_FILE="$idx" git write-tree) || return 1
   git commit-tree "$tree" -p "$OLD" -m "synthetic warden arm $1"
 }
-WARM=$(mkarm 0); CARM=$(mkarm 1)
+WARM=$(mkarm plain); CARM=$(mkarm hooks); XARM=$(mkarm extra); SARM=$(mkarm skill)
 printf 'setup-planning - %s at-least 4\n' "$OLD" > "$T/arms15a.conf"
 printf 'setup-planning - %s at-least 4\n' "$WARM" > "$T/arms15b.conf"
 printf 'setup-planning - %s at-least 4\n' "$CARM" > "$T/arms15c.conf"
+printf 'setup-planning - %s at-least 4\n' "$XARM" > "$T/arms15d.conf"
+printf 'setup-planning - %s at-least 4\n' "$SARM" > "$T/arms15e.conf"
 snaprun() { reset; rm -rf "$T/snap"; PATH=$GOODPATH STUB_SNAPSHOT_DIR="$T/snap" bash "$RUN" --yes --runs 1 --arms "$1" 2>&1; }
 
 # 15a. old arm: scratch tree equals git archive of plugins/superpowers
@@ -240,7 +249,10 @@ PY
 then ok=1; else ok=0; fi
 [ -f "$S/hooks/code-map" ] && [ -x "$S/hooks/code-map" ] && cmp -s "$S/hooks/code-map.md" "$W15/code-map.md" || ok=0
 [ ! -e "$S/hooks/hooks.json.warden" ] && [ ! -e "$S/.claude-plugin/marketplace.json.warden" ] || ok=0
-diff -r "$S/skills" "$T/ref15b/plugins/superpowers/skills" >/dev/null || ok=0
+cmp -s "$S/skills/demo/SKILL.md" "$W15/demo-SKILL.md" || ok=0
+diff -r "$T/ref15b/plugins/superpowers/skills" "$S/skills" 2>&1 | grep -v '^Only in '"$S"'/skills: demo' | grep -q . && ok=0
+cmp -s "$S/.claude-plugin/plugin.json" "$T/ref15b/plugins/superpowers/.claude-plugin/plugin.json" || ok=0
+cmp -s "$S/.claude-plugin/marketplace.json" "$T/ref15b/plugins/superpowers/.claude-plugin/marketplace.json" || ok=0
 [ "$ok" -eq 1 ] && [ "$(evals)" -eq 1 ] && pass "15b warden arm: merged hooks.json, code-map files, skills equal" || fail "15b warden merge wrong (rc=$rc evals=$(evals)): $out"
 
 # 15c. collision: exit 2, names the file, no eval
@@ -248,6 +260,57 @@ out=$(snaprun "$T/arms15c.conf"); rc=$?
 if [ "$rc" -eq 2 ] && [ "$(evals)" -eq 0 ] && printf '%s' "$out" | grep -qF 'merge collision:' && printf '%s' "$out" | grep -qF 'hooks/run-hook.cmd'; then
   pass "15c collision: exit 2, names hooks/run-hook.cmd, no eval"
 else fail "15c collision rc=$rc evals=$(evals): $out"; fi
+
+# 15d. unexpected warden manifest file: exit 2, names it, no eval
+out=$(snaprun "$T/arms15d.conf"); rc=$?
+if [ "$rc" -eq 2 ] && [ "$(evals)" -eq 0 ] && printf '%s' "$out" | grep -qF 'unexpected warden manifest file: .claude-plugin/extra.json'; then
+  pass "15d extra manifest file: exit 2, names .claude-plugin/extra.json, no eval"
+else fail "15d extra manifest rc=$rc evals=$(evals): $out"; fi
+
+# 15e. skill collides with Superpowers: exit 2, names it, no eval
+out=$(snaprun "$T/arms15e.conf"); rc=$?
+if [ "$rc" -eq 2 ] && [ "$(evals)" -eq 0 ] && printf '%s' "$out" | grep -qF 'merge collision: skills/brainstorming/SKILL.md'; then
+  pass "15e skill collision: exit 2, names skills/brainstorming/SKILL.md, no eval"
+else fail "15e skill collision rc=$rc evals=$(evals): $out"; fi
+
+# 15f. the wrapper acts on the checker's exit code. WARDEN_BEHAVIOR_MERGE_CHECK replaces lib/merge_check.py.
+printf '%s\n' '#!/usr/bin/env bash' 'echo "merge incomplete: x" >&2' 'exit 2' > "$T/mc-fail"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n%s\n" "$1" "$2" >> "$MC_ARGS_LOG"' 'exit 0' > "$T/mc-ok"
+chmod +x "$T/mc-fail" "$T/mc-ok"
+out=$(WARDEN_BEHAVIOR_MERGE_CHECK="$T/mc-fail" snaprun "$T/arms15b.conf"); rc=$?
+if [ "$rc" -eq 2 ] && [ "$(evals)" -eq 0 ] && printf '%s' "$out" | grep -qF 'merge incomplete: x'; then
+  pass "15f failing merge check: exit 2, message shown, no eval"
+else fail "15f failing merge check rc=$rc evals=$(evals): $out"; fi
+
+# 15g. test override: warning, STUB pin, STUB rows, never PASS, exit 1
+rm -f "$T/mc-args.log"
+out=$(MC_ARGS_LOG="$T/mc-args.log" WARDEN_BEHAVIOR_MERGE_CHECK="$T/mc-ok" snaprun "$T/arms15b.conf"); rc=$?
+rec=$(ls "$T/runs"/*.md 2>/dev/null | head -n1)
+rows=$(grep -E '^\| setup-planning ' "$rec" 2>/dev/null)
+if [ "$rc" -eq 1 ] && [ -n "$rec" ] && [ "$(evals)" -eq 1 ] \
+   && printf '%s' "$out" | grep -qF 'warning: WARDEN_BEHAVIOR_MERGE_CHECK is set; this run is a test run and grades nothing' \
+   && grep -qF -- '- Merge check: STUB' "$rec" \
+   && [ -n "$rows" ] && ! printf '%s' "$rows" | grep -q 'PASS' \
+   && [ "$(printf '%s\n' "$rows" | grep -vc '| STUB |$')" -eq 0 ] \
+   && a1=$(sed -n 1p "$T/mc-args.log") && a2=$(sed -n 2p "$T/mc-args.log") \
+   && [ "${a1%/plugins/warden}" != "$a1" ] && [ "${a2%/plugins/superpowers}" != "$a2" ] && [ "$a1" != "$a2" ]; then
+  pass "15g merge check override: warning, STUB pin, STUB rows, no PASS, exit 1"
+else fail "15g override rc=$rc evals=$(evals) rows=$rows: $out"; fi
+
+# 15h. before and after: the old wrapper (7ac111f) and the changed wrapper build the same scratch plugin for the old arm
+OLDW="$T/old/tests/behavior"; mkdir -p "$OLDW/lib"
+git show "$OLD:tests/behavior/run-behavior" > "$OLDW/run-behavior" && chmod +x "$OLDW/run-behavior"
+for f in $(git ls-tree --name-only "$OLD" tests/behavior/lib/); do git show "$OLD:$f" > "$OLDW/lib/$(basename "$f")"; done
+cp -R "$HERE/../evals" "$OLDW/evals"
+printf 'gitdir: %s\n' "$(git rev-parse --absolute-git-dir)" > "$T/old/.git"
+reset; rm -rf "$T/snap-old" "$T/snap-new"
+outo=$(PATH=$GOODPATH STUB_SNAPSHOT_DIR="$T/snap-old" bash "$OLDW/run-behavior" --yes --runs 1 --arms "$T/arms15a.conf" 2>&1); rco=$?
+reset
+outn=$(PATH=$GOODPATH STUB_SNAPSHOT_DIR="$T/snap-new" bash "$RUN" --yes --runs 1 --arms "$T/arms15a.conf" 2>&1); rcn=$?
+if [ -d "$T/snap-old/call-1" ] && [ -d "$T/snap-new/call-1" ] && [ "$rco" -eq "$rcn" ] \
+   && diff -r -x warden-evals "$T/snap-old/call-1" "$T/snap-new/call-1" >/dev/null; then
+  pass "15h before and after: old wrapper and new wrapper build identical scratch plugins"
+else fail "15h before/after differ (old rc=$rco, new rc=$rcn): $(diff -r -x warden-evals "$T/snap-old/call-1" "$T/snap-new/call-1" 2>&1 | head -n3) $outo $outn"; fi
 
 # 16. trace cache: copy, guard, retention
 printf 'read-order - %s at-least 1\n' "$OLD" > "$T/arms16.conf"
