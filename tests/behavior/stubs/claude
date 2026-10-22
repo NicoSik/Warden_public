@@ -19,6 +19,14 @@ if [ "${1:-}" = "plugin" ] && [ "${2:-}" = "eval" ]; then
   echo "$n" > "$CNT"
   export STUB_CALL_NO="$n"
   json="" runs=1 cases=""
+  if [ -n "${STUB_SNAPSHOT_DIR:-}" ]; then
+    target=""
+    for a in "$@"; do case "$a" in eval|plugin|-*) ;; *) target="$a"; break ;; esac; done
+    # The positional target after "eval" is the plugin directory. Copy it before results are written.
+    if [ -n "$target" ] && [ -d "$target" ]; then
+      mkdir -p "$STUB_SNAPSHOT_DIR/call-$n" && cp -R "$target/." "$STUB_SNAPSHOT_DIR/call-$n/"
+    fi
+  fi
   shift 2
   while [ $# -gt 0 ]; do
     case "$1" in

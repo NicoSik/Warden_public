@@ -97,6 +97,31 @@ for sha in $REFS; do
   scratch="$WORK/arm-$n"
   mkdir -p "$scratch"
   git -C "$REPO" archive "$sha" plugins/superpowers | tar -x -C "$scratch" || { echo "git archive failed for $sha" >&2; exit 2; }
+  # plugin eval loads one plugin. When the arm has plugins/warden, merge its hooks into the scratch Superpowers plugin.
+  if git -C "$REPO" cat-file -e "$sha:plugins/warden/hooks" 2>/dev/null; then
+    wtmp="$WORK/warden-$n"
+    mkdir -p "$wtmp"
+    git -C "$REPO" archive "$sha" plugins/warden/hooks | tar -x -C "$wtmp" || { echo "git archive failed for $sha" >&2; exit 2; }
+    shooks="$scratch/plugins/superpowers/hooks"
+    mkdir -p "$shooks"
+    while IFS= read -r f; do
+      [ "$f" = hooks.json ] && continue
+      if [ -e "$shooks/$f" ]; then echo "merge collision: hooks/$f" >&2; exit 2; fi
+      mkdir -p "$(dirname "$shooks/$f")"
+      cp -p "$wtmp/plugins/warden/hooks/$f" "$shooks/$f"
+    done < <(cd "$wtmp/plugins/warden/hooks" && find . -type f | sed 's|^\./||' | sort)
+    python3 -I - "$shooks/hooks.json" "$wtmp/plugins/warden/hooks/hooks.json" <<'PY' || { echo "error: could not merge warden hooks.json for $sha" >&2; exit 2; }
+import json, sys
+dst, src = sys.argv[1:3]
+d = json.load(open(dst))
+w = json.load(open(src))
+for event, entries in w.get("hooks", {}).items():
+    d.setdefault("hooks", {}).setdefault(event, []).extend(entries)
+with open(dst, "w") as f:
+    json.dump(d, f, indent=2)
+    f.write("\n")
+PY
+  fi
   dest="$scratch/plugins/superpowers/warden-evals"
   mkdir -p "$dest"
   cp -R "$EVALS/." "$dest/"

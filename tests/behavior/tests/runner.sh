@@ -33,6 +33,7 @@ evals() { grep -c '^CALL eval' "$WARDEN_STUB_LOG"; }
 cd "$HERE/../../.." || exit 1
 rm -rf tests/behavior/lib/__pycache__
 STATUS_BEFORE=$(git status --porcelain)
+REFS_BEFORE=$(git for-each-ref)
 
 # 1. no graphify -> exit 3, no eval
 reset
@@ -185,9 +186,73 @@ if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -qF 'arms file not found' && [ "
   pass "13 missing arms file: exit 2, no eval"
 else fail "13 rc=$rc evals=$(evals): $out"; fi
 
+# 15. warden hooks merge. Synthetic arms are built with commit-tree from a temporary index; no ref is made.
+OLD=$(git rev-parse 7ac111f)
+W15="$T/w15"; mkdir -p "$W15"
+WHJ='{"hooks":{"SessionStart":[{"matcher":"startup|clear|compact","hooks":[{"type":"command","command":"\"${CLAUDE_PLUGIN_ROOT}/hooks/code-map\" SessionStart"}]}],"SubagentStart":[{"hooks":[{"type":"command","command":"\"${CLAUDE_PLUGIN_ROOT}/hooks/code-map\" SubagentStart"}]}]}}'
+printf '%s\n' "$WHJ" > "$W15/hooks.json"
+printf '%s\n' '{"name": "warden", "version": "0.0.0"}' > "$W15/plugin.json"
+printf '%s\n' '{"name": "warden", "plugins": [{"name": "warden", "source": "./"}]}' > "$W15/marketplace.json"
+printf '%s\n' 'Code map rule line.' > "$W15/code-map.md"
+printf '%s\n' '#!/usr/bin/env bash' 'cat "$(dirname "$0")/code-map.md"' > "$W15/code-map"
+printf '%s\n' 'collides' > "$W15/run-hook.cmd"
+mkarm() { # mkarm <collide 0|1> -> prints commit sha
+  local idx="$W15/index-$1" blob
+  rm -f "$idx"
+  GIT_INDEX_FILE="$idx" git read-tree "$OLD" || return 1
+  add() { blob=$(git hash-object -w "$W15/$1") && GIT_INDEX_FILE="$idx" git update-index --add --cacheinfo "$2,$blob,$3"; }
+  add plugin.json 100644 plugins/warden/.claude-plugin/plugin.json
+  add marketplace.json 100644 plugins/warden/.claude-plugin/marketplace.json
+  add hooks.json 100644 plugins/warden/hooks/hooks.json
+  add code-map 100755 plugins/warden/hooks/code-map
+  add code-map.md 100644 plugins/warden/hooks/code-map.md
+  [ "$1" = 1 ] && add run-hook.cmd 100644 plugins/warden/hooks/run-hook.cmd
+  local tree; tree=$(GIT_INDEX_FILE="$idx" git write-tree) || return 1
+  git commit-tree "$tree" -p "$OLD" -m "synthetic warden arm $1"
+}
+WARM=$(mkarm 0); CARM=$(mkarm 1)
+printf 'setup-planning - %s at-least 4\n' "$OLD" > "$T/arms15a.conf"
+printf 'setup-planning - %s at-least 4\n' "$WARM" > "$T/arms15b.conf"
+printf 'setup-planning - %s at-least 4\n' "$CARM" > "$T/arms15c.conf"
+snaprun() { reset; rm -rf "$T/snap"; PATH=$GOODPATH STUB_SNAPSHOT_DIR="$T/snap" bash "$RUN" --yes --runs 1 --arms "$1" 2>&1; }
+
+# 15a. old arm: scratch tree equals git archive of plugins/superpowers
+out=$(snaprun "$T/arms15a.conf"); rc=$?
+rm -rf "$T/ref15a"; mkdir -p "$T/ref15a"; git archive "$OLD" plugins/superpowers | tar -x -C "$T/ref15a"
+( cd "$T/snap/call-1" && find . -path ./warden-evals -prune -o -type f -print | sort ) > "$T/list15a.snap"
+( cd "$T/ref15a/plugins/superpowers" && find . -type f | sort ) > "$T/list15a.ref"
+if [ -s "$T/list15a.snap" ] && cmp -s "$T/list15a.snap" "$T/list15a.ref" && cmp -s "$T/snap/call-1/hooks/hooks.json" "$T/ref15a/plugins/superpowers/hooks/hooks.json"; then
+  pass "15a old arm: same file list and hooks.json as git archive"
+else fail "15a old arm differs (rc=$rc): $(diff "$T/list15a.snap" "$T/list15a.ref" | head -n3) $out"; fi
+
+# 15b. warden arm: merged hooks.json, copied files, skills untouched
+out=$(snaprun "$T/arms15b.conf"); rc=$?
+rm -rf "$T/ref15b"; mkdir -p "$T/ref15b"; git archive "$WARM" plugins/superpowers | tar -x -C "$T/ref15b"
+S="$T/snap/call-1"
+if python3 -I - "$S/hooks/hooks.json" "$T/ref15b/plugins/superpowers/hooks/hooks.json" "$W15/hooks.json" <<'PY'
+import json, sys
+m, sp, w = (json.load(open(p))["hooks"] for p in sys.argv[1:4])
+ss, sub = m["SessionStart"], m["SubagentStart"]
+ok = (len(ss) == 2 and ss[0] == sp["SessionStart"][0] and ss[1] == w["SessionStart"][0]
+      and sub == w["SubagentStart"] and set(m) == {"SessionStart", "SubagentStart"})
+sys.exit(0 if ok else 1)
+PY
+then ok=1; else ok=0; fi
+[ -f "$S/hooks/code-map" ] && [ -x "$S/hooks/code-map" ] && cmp -s "$S/hooks/code-map.md" "$W15/code-map.md" || ok=0
+[ ! -e "$S/hooks/hooks.json.warden" ] && [ ! -e "$S/.claude-plugin/marketplace.json.warden" ] || ok=0
+diff -r "$S/skills" "$T/ref15b/plugins/superpowers/skills" >/dev/null || ok=0
+[ "$ok" -eq 1 ] && [ "$(evals)" -eq 1 ] && pass "15b warden arm: merged hooks.json, code-map files, skills equal" || fail "15b warden merge wrong (rc=$rc evals=$(evals)): $out"
+
+# 15c. collision: exit 2, names the file, no eval
+out=$(snaprun "$T/arms15c.conf"); rc=$?
+if [ "$rc" -eq 2 ] && [ "$(evals)" -eq 0 ] && printf '%s' "$out" | grep -qF 'merge collision:' && printf '%s' "$out" | grep -qF 'hooks/run-hook.cmd'; then
+  pass "15c collision: exit 2, names hooks/run-hook.cmd, no eval"
+else fail "15c collision rc=$rc evals=$(evals): $out"; fi
+
 # 8. repo untouched, no scratch left
 STATUS_AFTER=$(git status --porcelain)
 [ "$STATUS_BEFORE" = "$STATUS_AFTER" ] && pass "8 git status unchanged" || fail "8 git status changed"
+[ "$REFS_BEFORE" = "$(git for-each-ref)" ] && pass "8 git for-each-ref unchanged" || fail "8 refs changed"
 left=$(ls -A "$T/tmp")
 [ -z "$left" ] && pass "8 no scratch dir left" || fail "8 scratch left: $left"
 
