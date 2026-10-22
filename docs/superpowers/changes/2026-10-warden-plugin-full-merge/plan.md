@@ -19,6 +19,7 @@
 - After the merge, every `warden` file except the two manifest files and `hooks/hooks.json` must exist in the merged arm, byte-equal. Otherwise the wrapper exits 2 with `merge incomplete: <relative path>` before any eval.
 - No test or run touches a real project, the real `~/.claude`, or the git state of this repository. Synthetic arms use `git commit-tree` from a temporary `GIT_INDEX_FILE` and create no ref.
 - Python runs as `python3 -I`. No `__pycache__` beside `lib/`.
+- When `WARDEN_BEHAVIOR_MERGE_CHECK` is set, the wrapper prints `warning: WARDEN_BEHAVIOR_MERGE_CHECK is set; this run is a test run and grades nothing` to stderr. It passes `--merge-check-stub` to `record.py`. The record pins `- Merge check: STUB`. Every result row reads `STUB` in the result column, never `PASS` or `FAIL`. The grader exits 1. Without the variable, the record pins `- Merge check: lib/merge_check.py`.
 
 ---
 
@@ -28,6 +29,7 @@
 - Modify: `tests/behavior/run-behavior` (the merge block after `git archive "$sha" plugins/superpowers`, about lines 108–133)
 - Create: `tests/behavior/lib/merge_check.py`
 - Create: `tests/behavior/tests/merge_check.sh`
+- Modify: `tests/behavior/lib/record.py` (`--merge-check-stub` flag, the `## Pins` merge-check line, the result column)
 - Modify: `tests/behavior/tests/runner.sh` (`mkarm` and cases 15b–15c; new cases 15d–15f)
 - Modify: `tests/behavior/README.md` (the merge paragraph)
 
@@ -59,6 +61,9 @@ Tests:
   - New 15d: an arm whose `warden` holds `.claude-plugin/extra.json` exits 2. The output names `.claude-plugin/extra.json`, and no eval is called.
   - New 15e: an arm whose `warden` holds `skills/brainstorming/SKILL.md` collides with Superpowers. It exits 2, names `skills/brainstorming/SKILL.md`, and no eval is called.
   - New 15f: an end-to-end check that the wrapper acts on the checker's exit code. A correct merge never drops a file, so no arm can make the real checker fail through the wrapper. Instead, set `WARDEN_BEHAVIOR_MERGE_CHECK` to a stub script that exits 2 with `merge incomplete: x`. The wrapper must use that variable when it is set, and default to `lib/merge_check.py` otherwise. Assert exit 2, the message, and no eval call.
+  - New 15g: `WARDEN_BEHAVIOR_MERGE_CHECK` points at a stub script that exits 0. Use a `warden` arm and a normal stub eval. Assert that stderr holds the warning line, that the record holds `- Merge check: STUB`, that no result row holds `PASS`, that every result row holds `STUB`, and that the wrapper exits 1.
+  - Extend case 6 (the record case): a run without the variable pins `- Merge check: lib/merge_check.py`.
+  - New 15h, before and after: build the old arm `7ac111f` twice and diff the two snapshots with `diff -r`. "Before" uses the wrapper and `tests/behavior/lib/` from `git show 7ac111f:...`, placed in a temp folder `$T/old/tests/behavior/`, with `$T/old/tests/behavior/evals` copied from this tree and a file `$T/old/.git` that holds `gitdir: <this repo's git dir>` (from `git rev-parse --absolute-git-dir`). The old wrapper finds the repo as its grandparent folder and runs only read-only git there. "After" uses the changed wrapper. The diff must be empty, excluding the `warden-evals/` folder that each wrapper copies in. Use `7ac111f` because it stays in `main`'s history; the PR #5 commits change SHA when the branch rebases. If the old wrapper cannot run this way, report BLOCKED with the error instead of changing the approach.
   - 15a and 15c pass unchanged.
 
 Test commands: `bash tests/behavior_harness.sh merge_check`, `bash tests/behavior_harness.sh runner`, then `bash tests/behavior_harness.sh` and `bash tests/run.sh`.
@@ -66,8 +71,9 @@ Test commands: `bash tests/behavior_harness.sh merge_check`, `bash tests/behavio
 **Steps:**
 - [ ] Write `merge_check.sh` cases 1–4. Run them and see them fail (no `merge_check.py`).
 - [ ] Write `lib/merge_check.py`. Run `merge_check.sh` and see it pass.
-- [ ] Extend `mkarm` and write runner cases 15b additions, 15d, 15e and 15f. Run `runner` and see them fail.
-- [ ] Change the merge block in `run-behavior`, including `WARDEN_BEHAVIOR_MERGE_CHECK`.
+- [ ] Extend `mkarm` and write runner cases 15b additions, 15d, 15e, 15f, 15g, the case 6 addition and 15h. Run `runner` and see the new ones fail. 15h may pass before the change; record its output as the baseline.
+- [ ] Change the merge block in `run-behavior`, including `WARDEN_BEHAVIOR_MERGE_CHECK`, its warning and `--merge-check-stub`.
+- [ ] Add `--merge-check-stub` and the merge-check pin to `record.py`.
 - [ ] Run `bash tests/behavior_harness.sh` and `bash tests/run.sh` and see every test pass.
 - [ ] Update `tests/behavior/README.md`.
 - [ ] Commit: `feat: merge the whole warden plugin into eval arms and check the merge`.
@@ -85,7 +91,8 @@ After the last wave: the final review, the fix wave and the scoped re-review. Th
 1. **A real `warden` skill collides with a Superpowers skill name.** The wrapper then exits 2 and runs no eval. That is the intended outcome, because a silent overwrite would test the wrong skill. Case 15e proves it.
 2. **The merge check passes for the wrong reason.** A checker that compares the merged tree with itself would always pass. `merge_check.sh` cases 2 and 3 run it on trees that differ. Case 15f proves the wrapper acts on its exit code.
 3. **Old arms change.** Case 15a compares the old arm's scratch tree with `git archive` byte for byte.
-4. **`WARDEN_BEHAVIOR_MERGE_CHECK` is a test seam in production code.** It defaults to the real checker. The README names it as a test-only override.
+4. **`WARDEN_BEHAVIOR_MERGE_CHECK` is a test seam in production code.** It defaults to the real checker. When set, the wrapper warns, the record says STUB, and no row can pass, so a stubbed run can never serve as evidence. Case 15g proves it. The README names it as a test-only override.
+5. **The before-and-after case depends on the old wrapper running from a temp folder.** It uses a `.git` file and read-only git only. If it cannot run, the implementer stops and reports.
 
 Ruled out:
 - Copying the `warden` manifest into the merged arm. It collides with the Superpowers manifest (decision D1).
