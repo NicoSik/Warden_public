@@ -57,4 +57,12 @@ else
   fail "missing code-map.md must exit non-zero with empty stdout (rc=$rc)"
 fi
 
+# The code-map hook must never block the session or a subagent: no entry sets onFailure.
+n=$(jq '[.hooks[][].hooks[] | select(has("onFailure"))] | length' "$H" 2>/dev/null)
+if [ "$n" = "0" ]; then
+  pass "no hook entry in hooks.json sets onFailure"
+else
+  fail "hooks.json has $n hook entries with onFailure (must be 0)"
+fi
+
 harness_exit

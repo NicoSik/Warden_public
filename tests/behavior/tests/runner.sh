@@ -292,6 +292,21 @@ if [ -f "$WARDEN_BEHAVIOR_RAW_DIR/gate.sh" ] && [ -d "$WARDEN_BEHAVIOR_RAW_DIR/n
   pass "16d gate.sh and notes survive retention"
 else fail "16d non-run entries removed: $(ls "$WARDEN_BEHAVIOR_RAW_DIR" | tr '\n' ' ')"; fi
 
+# 16e. record.py exits 2 (partial result): retention still runs, exit stays 2
+reset
+i=0
+while [ "$i" -lt 21 ]; do
+  d=$(printf '%06x' $((0xb00000 + i)))
+  mkdir -p "$WARDEN_BEHAVIOR_RAW_DIR/$d"
+  touch -t "$(printf '20200101%02d00' $((i + 1)))" "$WARDEN_BEHAVIOR_RAW_DIR/$d"
+  i=$((i + 1))
+done
+out=$(PATH=$GOODPATH STUB_PARTIAL=1 bash "$RUN" --yes --runs 1 --arms "$T/arms16.conf" 2>&1); rc=$?
+nrun=$(ls "$WARDEN_BEHAVIOR_RAW_DIR" | grep -c '^[0-9a-f]\{6\}$')
+if [ "$rc" -eq 2 ] && [ "$nrun" -eq 20 ] && [ ! -e "$WARDEN_BEHAVIOR_RAW_DIR/b00000" ]; then
+  pass "16e record.py exit 2: retention still keeps 20 run folders, exit 2"
+else fail "16e rc=$rc nrun=$nrun: $(ls "$WARDEN_BEHAVIOR_RAW_DIR" | tr '\n' ' ')"; fi
+
 # 8. repo untouched, no scratch left
 STATUS_AFTER=$(git status --porcelain)
 [ "$STATUS_BEFORE" = "$STATUS_AFTER" ] && pass "8 git status unchanged" || fail "8 git status changed"

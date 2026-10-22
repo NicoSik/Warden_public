@@ -75,8 +75,7 @@
    }
   ],
   "claudeVersion": "2.1.306",
-  "partial": false,
-  "suite": {}
+  "partial": false
  },
  "c91be4c168c8dee05c37a928f8e93823e135e05c": {
   "cases": [
@@ -149,7 +148,6 @@
    }
   ],
   "claudeVersion": "2.1.306",
-  "partial": false,
-  "suite": {}
+  "partial": false
  }
 }

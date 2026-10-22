@@ -188,8 +188,9 @@ rc=$?
 # Keep the raw results outside the repo.
 if [ "$rc" -le 1 ]; then
   mkdir -p "$RAW_BASE/$ID" && cp "$WORK"/result-[0-9].json "$WORK"/result-[0-9][0-9].json "$RAW_BASE/$ID/" 2>/dev/null || true
-  # Retention: keep the newest 20 run folders. Only six-hex-character folders are touched.
-  python3 -I - "$RAW_BASE" <<'PY'
+fi
+# Retention runs whatever record.py returned: keep the newest 20 run folders. Only six-hex-character folders are touched.
+python3 -I - "$RAW_BASE" <<'PY'
 import os, re, shutil, sys
 base = sys.argv[1]
 runs = [e for e in os.scandir(base) if re.fullmatch(r"[0-9a-f]{6}", e.name) and e.is_dir(follow_symlinks=False)]
@@ -197,5 +198,4 @@ runs.sort(key=lambda e: e.stat(follow_symlinks=False).st_mtime)
 for e in runs[:-20]:
     shutil.rmtree(e.path, ignore_errors=True)
 PY
-fi
 exit "$rc"
