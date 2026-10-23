@@ -1,6 +1,6 @@
 # Spec: lesson-capture
 
-Intent: `intent.md`. Date: 2026-10-23. Status: draft.
+Intent: `intent.md`. Date: 2026-10-23. Status: approved.
 
 ## Summary
 
@@ -9,7 +9,7 @@ writes a short line for each clear Bash failure and for each later pass of a fai
 The command `warden-lesson` adds a lesson by hand and lists the inbox. Nothing triages the
 lessons yet.
 
-Size: 10 requirements from 23 intent items. The count is above the guide of about ten
+Size: 11 requirements from 24 intent items. The count is above the guide of about ten
 because the storage, the scrub and the safety rules each carry their own proof. The change
 is still one subsystem.
 
@@ -165,6 +165,21 @@ from `hooks/guard-secrets.sh` and asserts that the scrub replaces a sample of ea
 *Proof: `tests/warden_hooks.sh` asserts the new entries and the unchanged ones.
 `tests/warden_lessons.sh` runs `bin/warden-lesson`.*
 *Source: intent "Affected users and systems" (reaches sessions without `install.sh`).*
+
+**REQ-11** `warden-lesson status` MUST report whether capture works.
+
+- **REQ-11.1** `status` MUST print the resolved inbox path.
+- **REQ-11.2** `status` MUST print `enabled`, or `disabled` with each reason that applies:
+  `WARDEN_LESSON_OFF is 1`, `inside a git work tree`, or `not writable`.
+- **REQ-11.3** `status` MUST print the number of records that `list` derives, and the time
+  of the last line written to any session log or the manual log, or `never`.
+- **REQ-11.4** The hook MUST NOT print status. Only the command prints it.
+
+*Proof: `tests/warden_lessons.sh` runs `status` on an empty inbox, on an inbox with records,
+with `WARDEN_LESSON_OFF=1`, with an unwritable inbox, and with an inbox that resolves inside
+a temporary git work tree, where `status` reports `disabled` and `inside a git work tree`.*
+*Source: Nicolai's addition of 2026-10-23 ("this is how I check that capture actually
+works").*
 
 ### Operations
 
