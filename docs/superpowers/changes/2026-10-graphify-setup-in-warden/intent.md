@@ -59,3 +59,12 @@ sessions behave as PR #2 does today. No sandbox setting changes.
 ## Open questions
 - None from the interview. The spec settles the config key name and how existing
   `superpowers.graphify` values carry over.
+
+## Decisions after approval
+- 2026-10-23: warden has no `graphify-setup` skill. `hooks/setup-check.md` keeps PR #2's
+  direct instruction and actions. The SessionStart hook replaces the one placeholder
+  `{{GRAPHIFY_SETUP}}` with the quoted absolute path of `plugins/warden/scripts/graphify-setup`.
+  This keeps the eval and the real install on the same text. The Proposed outcome's skill
+  name `warden:graphify-setup` no longer applies.
+- 2026-10-23: when `git --version` fails, status prints `unavailable` with the one message.
+  When git runs but the directory is not a git work tree, PR #2's behavior stays.
