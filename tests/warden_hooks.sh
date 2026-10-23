@@ -150,17 +150,14 @@ fi
 
 # Trigger sentence: PR #2's text, restricted to the four skills.
 SC="$W/hooks/setup-check.md"
-if old_line=$(git -C "$REPO_DIR" show 5a972be:plugins/superpowers/skills/using-superpowers/SKILL.md 2>/dev/null | grep -m1 '^\*\*Setup check\.\*\*'); then
-  old_trig="${old_line%%session.*}session."
-  new_trig="$(head -n 1 "$SC")"; new_trig="${new_trig%%session.*}session."
-  if [ "$old_trig" = "$new_trig" ]; then
-    pass "setup-check.md trigger sentence equals PR #2's byte for byte"
-  else
-    fail "setup-check.md trigger sentence differs from PR #2 (want: $old_trig; got: $new_trig)"
-  fi
-else
-  fail "cannot read commit 5a972be (shallow clone?): fetch full history to run this check"
-fi
+# PR #2's sentence, from commit 5a972be (plugins/superpowers/skills/using-superpowers/SKILL.md).
+# Kept as a literal because that commit will not stay reachable.
+PR2_TRIGGER='**Setup check.** Before the first code exploration in brainstorming, writing-plans, writing-specs or systematic-debugging, run this command once per repository per session.'
+first_line="$(head -n 1 "${SETUP_CHECK_FILE:-$SC}")"
+case "$first_line" in
+  "$PR2_TRIGGER"*) pass "setup-check.md trigger sentence equals PR #2's byte for byte" ;;
+  *) fail "setup-check.md trigger sentence differs from PR #2 (want: $PR2_TRIGGER; got: $first_line)" ;;
+esac
 missing=""
 for sk in brainstorming writing-plans writing-specs systematic-debugging; do
   grep -qF "$sk" "$SC" || missing="$missing $sk"
