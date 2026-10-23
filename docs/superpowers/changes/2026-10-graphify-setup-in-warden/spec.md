@@ -50,13 +50,16 @@ quoted path, exactly one placeholder). Amends REQ-1.2 of `2026-10-graphify-warde
 
 **REQ-2** The setup-check file MUST carry PR #2's setup-check wording and actions.
 
-- **REQ-2.1** The file MUST name no plugin namespace and no skill.
+- **REQ-2.1** The file MUST name no plugin namespace and no `graphify-setup` skill. It MUST
+  keep PR #2's trigger sentence, which names the four Superpowers skills that start the check.
 - **REQ-2.2** The file MUST add one action: on `unavailable`, pass on the script's message
   once and continue without Graphify.
 - **REQ-2.3** The file MUST NOT change any other action of PR #2's setup check.
+- **REQ-2.4** The file MUST NOT carry the Code Map steps. `code-map.md` carries them.
 
-*Proof: a reviewer diffs the setup-check file against the setup-check text in
-`plugins/superpowers/skills/using-superpowers/SKILL.md` at `5a972be`.*
+*Proof: `tests/warden_hooks.sh` checks the trigger sentence against PR #2's sentence, kept as a
+literal from `5a972be`, byte for byte. It also checks that the file names the four skills, that
+the file holds no `graphify query`, and that the SessionStart context holds it exactly once.*
 *Source: decision of 2026-10-23 (no skill). Intent outcome "status prints `unavailable`".*
 
 **REQ-3** The script MUST stop with the blocked message when git does not run.
@@ -67,6 +70,8 @@ quoted path, exactly one placeholder). Amends REQ-1.2 of `2026-10-graphify-warde
 - **REQ-3.3** When `git --version` runs but the directory is not a git work tree, the script
   MUST keep PR #2's behavior: `not inside a git work tree` on stderr and exit 2.
 - **REQ-3.4** A command MUST NOT write anything before these checks pass.
+- **REQ-3.5** When the graphify binary is on PATH but `graphify --version` fails, `status`
+  MUST print `unavailable` on stdout, then the blocked message for `graphify`, and exit 4.
 
 *Proof: `tests/warden_graphify_setup.sh` runs each command with a stub `git` that fails
 `--version`, and separately in a plain folder with a working `git`. Each case asserts the
@@ -76,18 +81,26 @@ partial state".*
 
 **REQ-4** `setup` MUST leave the previous state unchanged when it fails.
 
-- **REQ-4.1** When `graphify --version` fails, `setup` MUST print the blocked message for
-  `graphify` and exit 4.
+- **REQ-4.1** When the graphify binary is on PATH but `graphify --version` fails, `setup`
+  MUST print the blocked message for `graphify` and exit 4. When the binary is not on PATH,
+  `setup` MUST keep PR #2's install hint and exit 1.
 - **REQ-4.2** The first write of `setup` MUST set `warden.graphify`. When that write fails,
   `setup` MUST print the blocked message for `.git/config` and exit 4.
 - **REQ-4.3** When a step after the first write fails, `setup` MUST restore the previous
-  state and then exit non-zero with PR #2's message for that step.
+  state and then exit non-zero. The message MUST name the failed step and say that setup
+  rolled back its changes.
 - **REQ-4.4** When `setup` succeeds, `warden.graphify` MUST hold `enabled` or `manual`, as in
   PR #2.
+- **REQ-4.5** When the final `warden.graphify` write fails after `setup` installs the hooks,
+  `setup` MUST exit non-zero. Its message MUST name each hook file that stays installed and
+  the removal command `graphify hook uninstall`. This case leaves the hooks installed. It is
+  a known limit.
 
 *Proof: `tests/warden_graphify_setup.sh` covers a failing graphify binary, a failing config
-write (a read-only `.git/config`), a failing graph build, a failing `.gitignore` write and a
-failing hook install. Each case compares the previous state before and after.*
+write (a leftover `.git/config.lock`, because `chmod a-w` does not stop git's lock-and-rename
+write), a failing graph build with an existing `graphify-out/`, a failing `.gitignore` write
+and a failing hook install. Each case compares the previous state before and after. A last
+case covers the REQ-4.5 limit.*
 *Source: decision of 2026-10-23 (config write first, rollback as backup). Intent constraint
 "No partial state".*
 
@@ -95,8 +108,9 @@ failing hook install. Each case compares the previous state before and after.*
 
 - **REQ-5.1** When the `decline` write fails, `decline` MUST print the blocked message for
   `.git/config`, exit 4 and change nothing.
-- **REQ-5.2** When the `notice` marker write fails, `notice` MUST print the blocked message
-  with `<what>` set to the marker folder, exit 4 and change nothing.
+- **REQ-5.2** When the `notice` marker write fails, `notice` MUST print
+  `graphify-setup: cannot run here: <marker folder> is not writable. Nothing was changed.`,
+  exit 4 and change nothing.
 
 *Proof: `tests/warden_graphify_setup.sh` runs both with an unwritable target.*
 *Source: intent constraint "No partial state".*
@@ -140,8 +154,10 @@ the five strings in the C1 ruling. The rerun record shows the candidate arm's co
 
 **REQ-9** PR #2 MUST carry the evidence for this change.
 
-- **REQ-9.1** The PR MUST link a run record for the three setup cases and read-order, with
-  the new PR #2 head as candidate and `18498db` (`main`) as baseline. The setup criteria
+- **REQ-9.1** The PR MUST link run records for the three setup cases and read-order, with
+  `18498db` (`main`) as baseline. The candidate MUST be the commit that carries the final
+  `setup-check.md` and hook: `061293f`, in records `e19c49` (setup cases) and `d8ff7d`
+  (read-order). Each record MUST explain why later commits cannot change its results. The setup criteria
   stay: planning `at-least 4`, quick question `at-most 1`, non-coding `at-most 1`. Read-order
   uses `both-at-least 4`.
 - **REQ-9.2** The PR body MUST record a smoke check in the real two-plugin load. The check
@@ -215,3 +231,25 @@ itself. The old traces are gone, so the offline check is the evidence for the pa
 - **Still open, answered in the plan.** Whether `input_match` runs over the raw command or over
   the JSON-encoded tool input. C1-a matches both. The plan's first task checks it with one
   offline run of the grader pattern against both strings.
+
+## Reconciled 2026-10-23
+
+- REQ-2.1 — the spec forbade naming any skill. The restored PR #2 trigger names the four
+  skills that start the check. Ruling: the spec was wrong.
+- REQ-2.3 and new REQ-2.4 — PR #2's section also held the old Code Map steps. The build
+  removed them, because `code-map.md` carries the current rule. Ruling: the spec was wrong.
+- REQ-3.5 — new. A graphify binary that is present but fails makes `status` print
+  `unavailable`. Ruling: the spec was wrong.
+- REQ-4.1 — an absent binary keeps PR #2's install hint and exit 1. Ruling: the spec was wrong.
+- REQ-4.3 — the spec asked for PR #2's messages. PR #2's hook-failure text claimed the graph
+  stays built. Ruling: the spec was wrong. Two more messages still said "graph built" after
+  a full rollback. Ruling: the code was wrong, and the code now says that setup rolled back its changes.
+- REQ-4.5 — new. A failed final config write after hook install leaves the hooks installed.
+  Ruling: the spec was wrong, recorded as a known limit. The message names what stays
+  installed and how to remove it.
+- REQ-4 proof — a leftover `.git/config.lock` models the blocked config write. Ruling: the spec
+  was wrong.
+- REQ-5.2 — the message says "is not writable". Ruling: the spec was wrong.
+- REQ-9.1 — the candidate is `061293f`, not the final head. Later commits change no file under
+  `plugins/warden/hooks`, and no graded run reached code past the preflight. Ruling: the spec
+  was wrong.
