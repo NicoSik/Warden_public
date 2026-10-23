@@ -451,4 +451,56 @@ fresh_root
 NROOT_SET; OUT="$(cd / && "$REPO_DIR/bin/warden-lesson" status 2>&1)"
 if grep -qx "inbox: $NROOT" <<<"$OUT" && grep -qx 'records: 0' <<<"$OUT"; then pass "bin/warden-lesson status works from another folder"; else fail "bin wrapper: $OUT"; fi
 
+# ---- Final-review fixes ----
+# F1. status counts derived records.
+fresh_root; mkdir -p "$ROOT/sessions"
+{ for i in 1 2 3; do jfail "2026-10-01T00:00:0${i}Z" "pytest" "E boom" "u$i" ',"h":"abcd1234abcd1234"'; done
+  echo '{"t":"edit","ts":"2026-10-01T00:00:04Z"}'; echo '{"t":"edit","ts":"2026-10-01T00:00:05Z"}'
+  echo '{"t":"pass","ts":"2026-10-01T00:00:06Z","tool_use_id":"tp","h":"abcd1234abcd1234"}'; } > "$ROOT/sessions/a.jsonl"
+WL add "one lesson" >/dev/null
+WL status | grep -qx 'records: 2' && pass "status counts derived records (2)" || fail "status derived count: $(WL status)"
+
+# F3. Fix-linking window.
+H=',"h":"abcd1234abcd1234"'
+PASSL='{"t":"pass","ts":"2026-10-01T00:00:09Z","tool_use_id":"tp","h":"abcd1234abcd1234"}'
+EDITL='{"t":"edit","ts":"2026-10-01T00:00:05Z"}'
+fresh_root; mkdir -p "$ROOT/sessions"
+{ jfail "2026-10-01T00:00:01Z" pytest "E boom" u1 "$H"; echo "$EDITL"; jfail "2026-10-01T00:00:03Z" pytest "E boom" u2 "$H"; echo "$EDITL"; echo "$PASSL"; } > "$ROOT/sessions/a.jsonl"
+WL list --json | jq1 'r=rs[0]; assert r["fixed"] is True and r["edits"]==1 and r["count"]==2, r' && pass "edits counted only after the last fail" || fail "window (a)"
+fresh_root; mkdir -p "$ROOT/sessions"
+{ jfail "2026-10-01T00:00:01Z" pytest "E boom" u1 "$H"; echo "$PASSL"; jfail "2026-10-01T00:00:10Z" pytest "E boom" u2 "$H"; } > "$ROOT/sessions/a.jsonl"
+WL list --json | jq1 'assert rs[0]["fixed"] is False, rs' && pass "a pass before the last fail does not fix" || fail "window (b)"
+fresh_root; mkdir -p "$ROOT/sessions"
+{ echo "$EDITL"; echo "$EDITL"; jfail "2026-10-01T00:00:06Z" pytest "E boom" u1 "$H"; echo "$PASSL"; } > "$ROOT/sessions/a.jsonl"
+WL list --json | jq1 'r=rs[0]; assert r["fixed"] is True and r["edits"]==0, r' && pass "edits before the fail are not counted" || fail "window (c)"
+
+# F2. Production hook command from hooks.json.
+HOOKS_JSON="$(dirname "$(dirname "$SCRIPT")")/hooks/hooks.json"
+PLUGIN_DIR="$(dirname "$(dirname "$SCRIPT")")"
+PCMD="$(python3 -I -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+cmds = [h["command"] for ev in d["hooks"].values() for g in ev for h in g["hooks"] if "warden-lesson" in h["command"]]
+assert len(cmds) == 2 and len(set(cmds)) == 1, cmds
+print(cmds[0])' "$HOOKS_JSON")"
+prod_hook() { CLAUDE_PLUGIN_ROOT="$PLUGIN_DIR" bash -c "$PCMD"; }
+fresh_root
+OUT="$(printf '%s' "$(fail_payload 'pytest -q' $'Exit code 1\nE   AssertionError: x')" | prod_hook 2>&1)"; RC=$?
+if [ "$RC" = 0 ] && [ -z "$OUT" ] && [ "$(jl t)" = fail ]; then pass "production hook command records a fail"; else fail "prod command: rc=$RC out='$OUT' cmd=$PCMD"; fi
+fresh_root
+OUT="$(WARDEN_LESSON_OFF=1 prod_hook </dev/null 2>&1)"; RC=$?
+if [ "$RC" = 0 ] && [ -z "$OUT" ] && [ ! -e "$ROOT" ]; then pass "production command honours the off switch"; else fail "prod off switch"; fi
+fresh_root
+MEDP="$(python3 -I -c '
+import subprocess, sys, time, statistics, os
+env = dict(os.environ, CLAUDE_PLUGIN_ROOT=sys.argv[3])
+ts = []
+for _ in range(20):
+    t = time.perf_counter()
+    subprocess.run(["bash", "-c", sys.argv[1]], input=sys.argv[2], text=True, capture_output=True, env=env)
+    ts.append((time.perf_counter() - t) * 1000)
+print("%.1f" % statistics.median(ts))' "$PCMD" "$FP" "$PLUGIN_DIR")"
+echo "  median production hook time: ${MEDP} ms"
+if python3 -I -c 'import sys; sys.exit(0 if float(sys.argv[1]) < 50 else 1)' "$MEDP"; then pass "median of 20 production hook runs is under 50 ms ($MEDP ms)"; else fail "production median $MEDP ms"; fi
+
 harness_exit

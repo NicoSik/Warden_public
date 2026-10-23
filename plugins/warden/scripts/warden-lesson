@@ -424,12 +424,9 @@ def _list(args):
 
 def _status(args):
     reasons = blocked_reasons()
-    files, manual = _log_files()
-    count, last = 0, ""
-    for f in files + [manual]:
-        for d in _read_lines(f):
-            count += 1
-            last = max(last, str(d.get("ts") or ""))
+    recs = _all_records()
+    count = len(recs)
+    last = max((r["ts"] for r in recs), default="")
     print("inbox: " + inbox())
     print("capture: enabled" if not reasons else "capture: disabled (%s)" % ", ".join(reasons))
     print("records: %d" % count)

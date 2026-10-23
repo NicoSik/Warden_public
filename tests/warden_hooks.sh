@@ -149,7 +149,7 @@ else
 fi
 
 # REQ-8: the lesson hook entries.
-LCMD='"${CLAUDE_PLUGIN_ROOT}/scripts/warden-lesson" hook'
+LCMD='python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/warden-lesson" hook'
 for spec in "PostToolUseFailure|Bash" "PostToolUse|Bash|Edit|Write|MultiEdit|NotebookEdit"; do
   ev="${spec%%|*}"; mt="${spec#*|}"
   got=$(jq -c --arg ev "$ev" '.hooks[$ev] // [] | map({matcher, hooks})' "$H" 2>/dev/null)

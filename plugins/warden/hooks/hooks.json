@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/warden-lesson\" hook",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/warden-lesson\" hook",
             "shell": "bash",
             "async": true
           }
@@ -44,7 +44,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/warden-lesson\" hook",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/scripts/warden-lesson\" hook",
             "shell": "bash",
             "async": true
           }
