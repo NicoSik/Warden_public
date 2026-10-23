@@ -1,0 +1,458 @@
+#!/usr/bin/env bash
+# Decide whether to offer Graphify in the current git repository, and set it up.
+# Usage: graphify-setup status|setup|decline|notice
+#
+#   status   Print one word: ready, declined, small, no-cli, build or ask.
+#            Checked in that order; the first match wins. build means the
+#            human partner already said yes for this repository, but this
+#            checkout has no working graph, so setup runs without a question.
+#   setup    Build the code graph, add graphify-out/ to .gitignore, and install
+#            the git hooks when git will run them. Never commits.
+#   decline  Record "no" for this repository in local git config.
+#   notice   Print the one-time install notice when status is no-cli.
+#            Prints nothing after the first time.
+#
+# Exit codes: 0 success; 1 failure; 2 usage error or not a git repository;
+# 3 setup built the graph but did not install hooks (graph refreshes manually);
+# 4 cannot run in this shell: git or graphify does not run, or the git config
+# or the notice marker is not writable. Nothing was changed.
+#
+# When setup fails after its first write, it puts the previous state back:
+# warden.graphify, .gitignore, graphify-out/, the hooks, .gitattributes and
+# merge.graphify.*.
+#
+# Graphify's hooks skip linked worktrees, so a worktree only ever gets a
+# manually refreshed graph. The decision in git config is shared by all of them.
+
+CONFIG_KEY="warden.graphify"
+MIN_SOURCE_FILES=20
+MARKER_FILE="${XDG_CACHE_HOME:-$HOME/.cache}/warden/graphify-install-mentioned"
+HOOK_MARKER="# graphify-hook-start"
+OUT_DIR="graphify-out"
+MERGE_KEYS="merge.graphify.name merge.graphify.driver"
+
+die() {
+  echo "graphify-setup: $1" >&2
+  exit "${2:-1}"
+}
+
+# One stderr line and exit 4: this shell cannot run the script's commands.
+blocked() {
+  die "cannot run here: $1 Nothing was changed." 4
+}
+
+repo_root() {
+  git rev-parse --show-toplevel 2>/dev/null
+}
+
+# Resolve a path to an absolute physical path. The leaf may not exist yet.
+# When the parent is missing too, return the path made absolute without
+# resolving it; such a directory can never be git's own hooks directory.
+resolve_path() {
+  local path="$1"
+  if [[ -d "$path" ]]; then
+    (cd "$path" && pwd -P)
+  elif [[ -d "$(dirname "$path")" ]]; then
+    echo "$(cd "$(dirname "$path")" && pwd -P)/$(basename "$path")"
+  elif [[ "$path" == /* ]]; then
+    echo "$path"
+  else
+    echo "$PWD/$path"
+  fi
+}
+
+is_linked_worktree() {
+  local git_dir common_dir
+  git_dir="$(resolve_path "$(git rev-parse --git-dir 2>/dev/null)")" || return 1
+  common_dir="$(resolve_path "$(git rev-parse --git-common-dir 2>/dev/null)")" || return 1
+  [[ "$git_dir" != "$common_dir" ]]
+}
+
+# Git's own hooks directory, ignoring core.hooksPath.
+builtin_hooks_dir() {
+  local common
+  common="$(git rev-parse --git-common-dir 2>/dev/null)" || return 1
+  resolve_path "$common/hooks"
+}
+
+# The hooks directory git actually runs. It follows core.hooksPath.
+effective_hooks_dir() {
+  local path
+  path="$(git rev-parse --git-path hooks 2>/dev/null)" || return 1
+  resolve_path "$path"
+}
+
+CLI_CHECKED=""
+cli_available() {
+  if [[ -z "$CLI_CHECKED" ]]; then
+    if command -v graphify >/dev/null 2>&1 && graphify --version >/dev/null 2>&1; then
+      CLI_CHECKED=yes
+    else
+      CLI_CHECKED=no
+    fi
+  fi
+  [[ "$CLI_CHECKED" == yes ]]
+}
+
+graph_exists() {
+  [[ -f "$(repo_root)/$OUT_DIR/graph.json" ]]
+}
+
+config_value() {
+  git config --local --get "$CONFIG_KEY" 2>/dev/null
+}
+
+# True when a graphify post-commit block sits where git will run it.
+# Husky 9 points core.hooksPath at .husky/_ inside the repository, and its
+# generated wrappers run the user hooks in .husky/, so that parent counts too.
+hooks_active() {
+  local dir root
+  dir="$(effective_hooks_dir)" || return 1
+  if [[ -x "$dir/post-commit" ]] && grep -qF "$HOOK_MARKER" "$dir/post-commit"; then
+    return 0
+  fi
+  root="$(resolve_path "$(repo_root)")" || return 1
+  if [[ "$(basename "$dir")" == "_" ]] && [[ "$dir" == "$root"/* ]] \
+    && [[ -f "$(dirname "$dir")/post-commit" ]] \
+    && grep -qF "$HOOK_MARKER" "$(dirname "$dir")/post-commit"; then
+    return 0
+  fi
+  return 1
+}
+
+source_file_count() {
+  git -C "$(repo_root)" ls-files -z \
+    | tr '\0' '\n' \
+    | grep -ciE '\.(c|cc|cpp|cxx|h|hh|hpp|cs|go|java|kt|kts|scala|swift|m|mm|rs|py|rb|php|js|jsx|mjs|cjs|ts|tsx|vue|svelte|lua|dart|ex|exs|erl|hs|ml|clj|sh|bash|zsh|ps1|sql|r|jl|zig|nim|pl|pm|groovy|v|sv|vhd|f90)$' \
+    || true
+}
+
+is_ready() {
+  local value="$1"
+  cli_available && graph_exists || return 1
+  if is_linked_worktree; then
+    [[ "$value" == "enabled" || "$value" == "manual" ]]
+  else
+    hooks_active || [[ "$value" == "manual" ]]
+  fi
+}
+
+compute_status() {
+  local value
+  value="$(config_value)"
+  if is_ready "$value"; then
+    echo ready
+  elif [[ "$value" == "declined" ]]; then
+    echo declined
+  elif (($(source_file_count) < MIN_SOURCE_FILES)); then
+    echo small
+  elif ! cli_available; then
+    echo no-cli
+  elif [[ "$value" == "enabled" || "$value" == "manual" ]]; then
+    echo build
+  else
+    echo ask
+  fi
+}
+
+# Put graphify-out/ in .gitignore once. Keeps existing content and adds a
+# missing final newline before the new line.
+ensure_gitignore() {
+  local file="$1/.gitignore"
+  if [[ -f "$file" ]] \
+    && grep -qxE '[[:space:]]*(\*\*/|/)?graphify-out(/|/\*)?[[:space:]]*' "$file"; then
+    echo "gitignore: graphify-out/ already listed"
+    return 0
+  fi
+  if [[ -s "$file" ]] && [[ -n "$(tail -c 1 "$file")" ]]; then
+    printf '\n' >>"$file" || return 1
+  fi
+  printf '%s/\n' "$OUT_DIR" >>"$file" || return 1
+  echo "gitignore: added graphify-out/ (not committed)"
+}
+
+# State that graphify hook install changes outside the hook files. It is put
+# back after the install, and by the EXIT trap if setup stops halfway.
+ATTRS_FILE=""
+ATTRS_BACKUP=""
+SETUP_ROOT=""
+SETUP_ACTIVE=false
+PREV_VALUE=""
+PREV_VALUE_SET=false
+IGNORE_FILE=""
+IGNORE_BACKUP=""
+IGNORE_EXISTED=false
+HAD_OUT=false
+OUT_BACKUP=""
+ATTRS_EXISTED=false
+MERGE_SNAPSHOT=""
+RESTORE_PENDING=false
+
+snapshot_install_side_effects() {
+  ATTRS_FILE="$1/.gitattributes"
+  ATTRS_EXISTED=false
+  if [[ -f "$ATTRS_FILE" ]]; then
+    ATTRS_EXISTED=true
+    ATTRS_BACKUP="$(mktemp)" || return 1
+    cp -p "$ATTRS_FILE" "$ATTRS_BACKUP" || return 1
+  fi
+  MERGE_SNAPSHOT=""
+  local key value
+  for key in $MERGE_KEYS; do
+    if value="$(git config --local --get "$key")"; then
+      MERGE_SNAPSHOT+="$key=$value"$'\n'
+    fi
+  done
+  RESTORE_PENDING=true
+}
+
+restore_install_side_effects() {
+  [[ "$RESTORE_PENDING" == true ]] || return 0
+  local ok=true key line
+  if [[ "$ATTRS_EXISTED" == true ]]; then
+    cp -p "$ATTRS_BACKUP" "$ATTRS_FILE" || ok=false
+  else
+    rm -f "$ATTRS_FILE" || ok=false
+  fi
+  for key in $MERGE_KEYS; do
+    line="$(printf '%s' "$MERGE_SNAPSHOT" | grep -m 1 "^$key=")"
+    if [[ -n "$line" ]]; then
+      git config --local "$key" "${line#*=}" || ok=false
+    else
+      git config --local --unset-all "$key" >/dev/null 2>&1
+    fi
+  done
+  [[ -n "$ATTRS_BACKUP" ]] && rm -f "$ATTRS_BACKUP"
+  RESTORE_PENDING=false
+  [[ "$ok" == true ]]
+}
+
+# Save what setup changes before the graph build: warden.graphify, .gitignore
+# (byte for byte) and whether graphify-out/ already exists. The first write of
+# setup, warden.graphify=enabled, comes right after this. SETUP_ACTIVE turns
+# on only once that write has worked, so a blocked config has nothing to undo.
+begin_setup() {
+  local root="$1"
+  SETUP_ROOT="$root"
+  IGNORE_FILE="$root/.gitignore"
+  if [[ -f "$IGNORE_FILE" ]]; then
+    IGNORE_EXISTED=true
+    IGNORE_BACKUP="$(mktemp)" || return 1
+    cp -p "$IGNORE_FILE" "$IGNORE_BACKUP" || return 1
+  fi
+  if PREV_VALUE="$(git config --local --get "$CONFIG_KEY" 2>/dev/null)"; then
+    PREV_VALUE_SET=true
+  else
+    PREV_VALUE=""
+  fi
+  if [[ -e "$root/$OUT_DIR" ]]; then
+    HAD_OUT=true
+    OUT_BACKUP="$(mktemp -d)" || return 1
+    cp -Rp "$root/$OUT_DIR/." "$OUT_BACKUP/" || return 1
+  fi
+  return 0
+}
+
+# Put back everything begin_setup saved. The config comes first so a failure
+# later in the restore cannot leave a half-enabled record.
+restore_setup() {
+  [[ "$SETUP_ACTIVE" == true ]] || return 0
+  local ok=true
+  if [[ "$PREV_VALUE_SET" == true ]]; then
+    git config --local "$CONFIG_KEY" "$PREV_VALUE" || ok=false
+  else
+    git config --local --unset-all "$CONFIG_KEY" >/dev/null 2>&1
+    git config --local --get "$CONFIG_KEY" >/dev/null 2>&1 && ok=false
+  fi
+  if [[ "$IGNORE_EXISTED" == true ]]; then
+    rm -f "$IGNORE_FILE" && cp -p "$IGNORE_BACKUP" "$IGNORE_FILE" || ok=false
+  else
+    rm -f "$IGNORE_FILE" || ok=false
+  fi
+  if [[ "$HAD_OUT" == false ]]; then
+    rm -rf "${SETUP_ROOT:?}/$OUT_DIR" || ok=false
+  else
+    rm -rf "${SETUP_ROOT:?}/$OUT_DIR" && mkdir -p "$SETUP_ROOT/$OUT_DIR" \
+      && cp -Rp "$OUT_BACKUP/." "$SETUP_ROOT/$OUT_DIR/" || ok=false
+  fi
+  [[ "$ok" == true && -n "$OUT_BACKUP" ]] && rm -rf "$OUT_BACKUP"
+  [[ -n "$IGNORE_BACKUP" ]] && rm -f "$IGNORE_BACKUP"
+  SETUP_ACTIVE=false
+  [[ "$ok" == true ]]
+}
+
+on_exit() {
+  if [[ "$RESTORE_PENDING" == true ]]; then
+    restore_install_side_effects \
+      || echo "graphify-setup: could not restore .gitattributes or merge.graphify.* config; check them by hand." >&2
+  fi
+  if [[ "$SETUP_ACTIVE" == true ]]; then
+    restore_setup \
+      || echo "graphify-setup: could not restore warden.graphify, .gitignore or graphify-out/; check them by hand." >&2
+  fi
+}
+
+install_hooks() {
+  local root="$1" effective="$2" install_ok=true
+  snapshot_install_side_effects "$root" || die "cannot save .gitattributes before installing hooks."
+  graphify hook install >&2 || install_ok=false
+  if [[ "$install_ok" == true ]] && ! hooks_active; then
+    install_ok=false
+    echo "graphify-setup: graphify hook install did not leave an active post-commit hook in $effective." >&2
+  fi
+  if [[ "$install_ok" == false ]]; then
+    graphify hook uninstall >&2 || echo "graphify-setup: graphify hook uninstall also failed." >&2
+  fi
+  restore_install_side_effects \
+    || die "could not restore .gitattributes or merge.graphify.* config; check them by hand."
+  [[ "$install_ok" == true ]] \
+    || die "hook install failed and was rolled back, along with the graph and .gitignore. Make $effective/post-commit executable if it exists, then rerun setup."
+}
+
+# The final config write failed after the hooks went in. Rollback is no longer
+# pending, so name what stays installed and how to remove it.
+hooks_left_die() {
+  local dir="$1" f files="$1/post-commit"
+  for f in "$dir"/*; do
+    [[ -f "$f" && "$f" != "$dir/post-commit" ]] && grep -qF "$HOOK_MARKER" "$f" 2>/dev/null && files="$files, $f"
+  done
+  die "the warden.graphify value could not be recorded, so setup is incomplete. The graphify hooks stay installed: $files. To remove them, run 'graphify hook uninstall' from the repository root."
+}
+
+# Setup worked: keep the changes and drop the saved copies.
+commit_setup() {
+  SETUP_ACTIVE=false
+  [[ -n "$IGNORE_BACKUP" ]] && rm -f "$IGNORE_BACKUP"
+  [[ -n "$OUT_BACKUP" ]] && rm -rf "$OUT_BACKUP"
+  return 0
+}
+
+cmd_setup() {
+  local root builtin effective value
+  root="$(repo_root)"
+  if ! command -v graphify >/dev/null 2>&1; then
+    die "graphify is not installed. Install it with: uv tool install graphifyy"
+  fi
+  cli_available || blocked "graphify does not run in this shell."
+  if [[ -n "${GRAPHIFY_OUT:-}" && "${GRAPHIFY_OUT%/}" != "$OUT_DIR" ]]; then
+    die "GRAPHIFY_OUT is set to '$GRAPHIFY_OUT'. Warden expects the graph in graphify-out/; unset GRAPHIFY_OUT and rerun setup."
+  fi
+  cd "$root" || die "cannot enter $root"
+  trap on_exit EXIT
+
+  begin_setup "$root" || die "cannot save the previous state before setup."
+  # The first write. Everything after it is undone by on_exit when setup fails.
+  if ! git config --local "$CONFIG_KEY" enabled 2>/dev/null; then
+    [[ -n "$IGNORE_BACKUP" ]] && rm -f "$IGNORE_BACKUP"
+    [[ -n "$OUT_BACKUP" ]] && rm -rf "$OUT_BACKUP"
+    blocked ".git/config is not writable."
+  fi
+  SETUP_ACTIVE=true
+
+  echo "graph: building (graphify update .)"
+  if ! graphify update . >&2 || [[ ! -f "$OUT_DIR/graph.json" ]]; then
+    die "graph build failed. Nothing else was changed."
+  fi
+  echo "graph: built"
+
+  ensure_gitignore "$root" || die ".gitignore could not be updated. Setup was rolled back; nothing was changed."
+
+  local hooks_installed=false
+  if is_linked_worktree; then
+    echo "hooks: not used. This is a linked worktree, and graphify's hooks skip worktrees."
+    echo "       The graph refreshes only when 'graphify update .' runs."
+  elif ! builtin="$(builtin_hooks_dir)" || ! effective="$(effective_hooks_dir)"; then
+    die "git could not report its hooks directory. Setup was rolled back; nothing was changed."
+  elif [[ "$effective" != "$builtin" ]]; then
+    echo "hooks: not installed. core.hooksPath points git at $effective, and graphify would write"
+    echo "       hooks git does not run, or into hook files the repository tracks."
+    echo "       The graph refreshes only when 'graphify update .' runs."
+  elif hooks_active; then
+    hooks_installed=true
+    echo "hooks: already installed in $effective"
+  else
+    install_hooks "$root" "$effective"
+    hooks_installed=true
+    echo "hooks: installed in $effective (graph rebuilds on commit and checkout)"
+  fi
+
+  # The value before setup decides what a linked worktree keeps.
+  value="$PREV_VALUE"
+  if [[ "$hooks_installed" == true ]]; then
+    git config --local "$CONFIG_KEY" enabled || hooks_left_die "$effective"
+    commit_setup
+    echo "status: ready"
+    return 0
+  fi
+  # A linked worktree shares the config with the main checkout, so it keeps an
+  # enabled record. The main checkout records manual, or status would say build.
+  if ! is_linked_worktree || [[ "$value" != "enabled" ]]; then
+    git config --local "$CONFIG_KEY" manual || die "setup finished, but git config could not record it."
+  fi
+  commit_setup
+  echo "status: ready (manual refresh)"
+  return 3
+}
+
+# A graphify on PATH that fails --version does not run in this shell. Tell the
+# caller so, instead of status no-cli, which would say to install it. ready,
+# declined and small still win first, as in compute_status.
+cmd_status() {
+  local status
+  status="$(compute_status)"
+  if [[ "$status" == no-cli ]] && command -v graphify >/dev/null 2>&1; then
+    echo unavailable
+    blocked "graphify does not run in this shell."
+  fi
+  echo "$status"
+}
+
+cmd_decline() {
+  git config --local "$CONFIG_KEY" declined 2>/dev/null || blocked ".git/config is not writable."
+  echo "declined: graphify will not be offered in this repository"
+}
+
+cmd_notice() {
+  [[ "$(compute_status)" == "no-cli" ]] || return 0
+  [[ -e "$MARKER_FILE" ]] && return 0
+  local dir created
+  dir="$(dirname "$MARKER_FILE")"
+  created="$(first_missing_dir "$dir")"
+  if ! { mkdir -p "$dir" && : >"$MARKER_FILE"; } 2>/dev/null; then
+    [[ -n "$created" ]] && rm -rf "$created"
+    blocked "$dir is not writable."
+  fi
+  if ! echo "Tip: Graphify builds a code graph that makes code exploration faster. Install it with 'uv tool install graphifyy'."; then
+    rm -f "$MARKER_FILE"
+    [[ -n "$created" ]] && rm -rf "$created"
+    return 1
+  fi
+}
+
+# The highest directory on the path that does not exist yet, or nothing.
+first_missing_dir() {
+  local path="$1" missing=""
+  while [[ ! -e "$path" && "$path" != "/" && "$path" != "." ]]; do
+    missing="$path"
+    path="$(dirname "$path")"
+  done
+  echo "$missing"
+}
+
+main() {
+  [[ $# -eq 1 ]] || die "usage: graphify-setup status|setup|decline|notice" 2
+  if ! git --version >/dev/null 2>&1; then
+    [[ "$1" == status ]] && echo unavailable
+    blocked "git does not run in this shell."
+  fi
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not inside a git work tree" 2
+  case "$1" in
+    status) cmd_status ;;
+    setup) cmd_setup ;;
+    decline) cmd_decline ;;
+    notice) cmd_notice ;;
+    *) die "unknown command: $1" 2 ;;
+  esac
+}
+
+main "$@"

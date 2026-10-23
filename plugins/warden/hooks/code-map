@@ -25,4 +25,17 @@ escape_for_json() {
     printf '%s' "$s"
 }
 
+if [ "$event" = SessionStart ]; then
+  SETUP_DIR="$(cd -P "${SCRIPT_DIR}/../scripts" 2>/dev/null && pwd)" || exit 1
+  SETUP="${SETUP_DIR}/graphify-setup"
+  [ -f "$SETUP" ] && [ -x "$SETUP" ] || exit 1
+  check=$(cat "${SCRIPT_DIR}/setup-check.md" && printf x) || exit 1
+  check="${check%x}"
+  placeholder='{{GRAPHIFY_SETUP}}'
+  rest="${check//"$placeholder"/}"
+  # Exactly one placeholder: removing it must shorten the text by its own length, once.
+  [ $(( ${#check} - ${#rest} )) -eq ${#placeholder} ] || exit 1
+  content="${content}${check//"$placeholder"/$SETUP}"
+fi
+
 printf '{"hookSpecificOutput":{"hookEventName":"%s","additionalContext":"%s"}}\n' "$event" "$(escape_for_json "$content")"
