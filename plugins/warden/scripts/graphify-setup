@@ -309,6 +309,16 @@ install_hooks() {
     || die "hook install failed and was rolled back, along with the graph and .gitignore. Make $effective/post-commit executable if it exists, then rerun setup."
 }
 
+# The final config write failed after the hooks went in. Rollback is no longer
+# pending, so name what stays installed and how to remove it.
+hooks_left_die() {
+  local dir="$1" f files="$1/post-commit"
+  for f in "$dir"/*; do
+    [[ -f "$f" && "$f" != "$dir/post-commit" ]] && grep -qF "$HOOK_MARKER" "$f" 2>/dev/null && files="$files, $f"
+  done
+  die "the warden.graphify value could not be recorded, so setup is incomplete. The graphify hooks stay installed: $files. To remove them, run 'graphify hook uninstall' from the repository root."
+}
+
 # Setup worked: keep the changes and drop the saved copies.
 commit_setup() {
   SETUP_ACTIVE=false
@@ -345,14 +355,14 @@ cmd_setup() {
   fi
   echo "graph: built"
 
-  ensure_gitignore "$root" || die "graph built, but .gitignore could not be updated."
+  ensure_gitignore "$root" || die ".gitignore could not be updated. Setup was rolled back; nothing was changed."
 
   local hooks_installed=false
   if is_linked_worktree; then
     echo "hooks: not used. This is a linked worktree, and graphify's hooks skip worktrees."
     echo "       The graph refreshes only when 'graphify update .' runs."
   elif ! builtin="$(builtin_hooks_dir)" || ! effective="$(effective_hooks_dir)"; then
-    die "graph built and ignored, but git could not report its hooks directory."
+    die "git could not report its hooks directory. Setup was rolled back; nothing was changed."
   elif [[ "$effective" != "$builtin" ]]; then
     echo "hooks: not installed. core.hooksPath points git at $effective, and graphify would write"
     echo "       hooks git does not run, or into hook files the repository tracks."
@@ -369,7 +379,7 @@ cmd_setup() {
   # The value before setup decides what a linked worktree keeps.
   value="$PREV_VALUE"
   if [[ "$hooks_installed" == true ]]; then
-    git config --local "$CONFIG_KEY" enabled || die "setup finished, but git config could not record it."
+    git config --local "$CONFIG_KEY" enabled || hooks_left_die "$effective"
     commit_setup
     echo "status: ready"
     return 0

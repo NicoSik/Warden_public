@@ -120,6 +120,7 @@ case "$1" in
       chmod 755 "$dir/post-commit"
     fi
     printf 'graphify-out/graph.json merge=graphify\n' >>.gitattributes
+    [[ "$mode" == "hook-lock" ]] && { touch "$(git rev-parse --git-common-dir)/config.lock"; exit 0; }
     git config merge.graphify.name "graphify graph.json union merge"
     git config merge.graphify.driver "graphify merge-driver %O %A %B"
     ;;
@@ -699,10 +700,20 @@ chmod a-w "$TEST_ROOT/ifail/.gitignore"
 before="$(snapshot_state "$TEST_ROOT/ifail")"
 run_in "$TEST_ROOT/ifail" "$(with_fake)" setup
 assert_eq "$RC" "1" "gitignore failure: setup exits 1"
-assert_true "gitignore failure: PR #2 message" grep -q "could not be updated" <<<"$ERR"
+assert_true "gitignore failure: says it was rolled back" grep -qF "graphify-setup: .gitignore could not be updated. Setup was rolled back; nothing was changed." <<<"$ERR"
 assert_unchanged "$TEST_ROOT/ifail" "$before" "gitignore failure: state is unchanged, warden.graphify unset"
 assert_eq "$(cat "$TEST_ROOT/ifail/.gitignore")" "node_modules" "gitignore failure: .gitignore content is byte for byte the same"
 chmod u+w "$TEST_ROOT/ifail/.gitignore"
+
+echo "Test: final config write fails after the hooks are installed"
+make_repo "$TEST_ROOT/lfail" 20
+FAKE_GRAPHIFY_FAIL=hook-lock run_in "$TEST_ROOT/lfail" "$(with_fake)" setup
+assert_true "config lock failure: setup exits non-zero" test "$RC" -ne 0
+assert_true "config lock failure: names the post-commit hook path" grep -qF "$TEST_ROOT/lfail/.git/hooks/post-commit" <<<"$ERR"
+assert_true "config lock failure: names the removal command" grep -qF "graphify hook uninstall" <<<"$ERR"
+assert_true "config lock failure: says the value was not recorded" grep -qF "warden.graphify" <<<"$ERR"
+assert_true "config lock failure: the hook stays installed (known limit)" grep -qF "graphify-hook-start" "$TEST_ROOT/lfail/.git/hooks/post-commit"
+rm -f "$TEST_ROOT/lfail/.git/config.lock"
 
 echo "Test: hook install fails"
 make_repo "$TEST_ROOT/hfail" 20
