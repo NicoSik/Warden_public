@@ -148,4 +148,30 @@ else
   fail "hooks.json has $n hook entries with onFailure (must be 0)"
 fi
 
+# Trigger sentence: PR #2's text, restricted to the four skills.
+SC="$W/hooks/setup-check.md"
+if old_line=$(git -C "$REPO_DIR" show 5a972be:plugins/superpowers/skills/using-superpowers/SKILL.md 2>/dev/null | grep -m1 '^\*\*Setup check\.\*\*'); then
+  old_trig="${old_line%%session.*}session."
+  new_trig="$(head -n 1 "$SC")"; new_trig="${new_trig%%session.*}session."
+  if [ "$old_trig" = "$new_trig" ]; then
+    pass "setup-check.md trigger sentence equals PR #2's byte for byte"
+  else
+    fail "setup-check.md trigger sentence differs from PR #2 (want: $old_trig; got: $new_trig)"
+  fi
+else
+  fail "cannot read commit 5a972be (shallow clone?): fetch full history to run this check"
+fi
+missing=""
+for sk in brainstorming writing-plans writing-specs systematic-debugging; do
+  grep -qF "$sk" "$SC" || missing="$missing $sk"
+done
+[ -z "$missing" ] && pass "setup-check.md names all four skills" || fail "setup-check.md misses:$missing"
+if grep -qF 'graphify query' "$SC"; then
+  fail "setup-check.md holds a stale 'graphify query' (code-map.md owns the Code Map rule)"
+else
+  pass "setup-check.md holds no 'graphify query'"
+fi
+n=$(grep -o -F 'graphify query' "$HARNESS_TMP/SessionStart.txt" | wc -l | tr -d ' ')
+[ "$n" = 1 ] && pass "SessionStart additionalContext holds 'graphify query' exactly once" || fail "SessionStart additionalContext holds 'graphify query' $n times (want 1)"
+
 harness_exit
