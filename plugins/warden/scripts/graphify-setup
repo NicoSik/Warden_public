@@ -183,6 +183,7 @@ IGNORE_FILE=""
 IGNORE_BACKUP=""
 IGNORE_EXISTED=false
 HAD_OUT=false
+OUT_BACKUP=""
 ATTRS_EXISTED=false
 MERGE_SNAPSHOT=""
 RESTORE_PENDING=false
@@ -244,7 +245,11 @@ begin_setup() {
   else
     PREV_VALUE=""
   fi
-  [[ -e "$root/$OUT_DIR" ]] && HAD_OUT=true
+  if [[ -e "$root/$OUT_DIR" ]]; then
+    HAD_OUT=true
+    OUT_BACKUP="$(mktemp -d)" || return 1
+    cp -Rp "$root/$OUT_DIR/." "$OUT_BACKUP/" || return 1
+  fi
   return 0
 }
 
@@ -264,7 +269,13 @@ restore_setup() {
   else
     rm -f "$IGNORE_FILE" || ok=false
   fi
-  [[ "$HAD_OUT" == false ]] && { rm -rf "${SETUP_ROOT:?}/$OUT_DIR" || ok=false; }
+  if [[ "$HAD_OUT" == false ]]; then
+    rm -rf "${SETUP_ROOT:?}/$OUT_DIR" || ok=false
+  else
+    rm -rf "${SETUP_ROOT:?}/$OUT_DIR" && mkdir -p "$SETUP_ROOT/$OUT_DIR" \
+      && cp -Rp "$OUT_BACKUP/." "$SETUP_ROOT/$OUT_DIR/" || ok=false
+  fi
+  [[ "$ok" == true && -n "$OUT_BACKUP" ]] && rm -rf "$OUT_BACKUP"
   [[ -n "$IGNORE_BACKUP" ]] && rm -f "$IGNORE_BACKUP"
   SETUP_ACTIVE=false
   [[ "$ok" == true ]]
@@ -302,6 +313,7 @@ install_hooks() {
 commit_setup() {
   SETUP_ACTIVE=false
   [[ -n "$IGNORE_BACKUP" ]] && rm -f "$IGNORE_BACKUP"
+  [[ -n "$OUT_BACKUP" ]] && rm -rf "$OUT_BACKUP"
   return 0
 }
 
@@ -322,6 +334,7 @@ cmd_setup() {
   # The first write. Everything after it is undone by on_exit when setup fails.
   if ! git config --local "$CONFIG_KEY" enabled 2>/dev/null; then
     [[ -n "$IGNORE_BACKUP" ]] && rm -f "$IGNORE_BACKUP"
+    [[ -n "$OUT_BACKUP" ]] && rm -rf "$OUT_BACKUP"
     blocked ".git/config is not writable."
   fi
   SETUP_ACTIVE=true

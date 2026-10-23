@@ -84,7 +84,7 @@ case "$1" in
     echo "graphify 0.0.0-fake"
     ;;
   update)
-    [[ "$mode" == "update" ]] && { mkdir -p graphify-out; echo "partial" >graphify-out/partial; exit 1; }
+    [[ "$mode" == "update" ]] && { mkdir -p graphify-out; echo "partial" >graphify-out/partial; printf '{"half' >graphify-out/graph.json; echo x >graphify-out/graph.json.tmp; exit 1; }
     mkdir -p graphify-out
     [[ "$mode" == "update-empty" ]] && exit 0
     echo '{"nodes":[]}' >graphify-out/graph.json
@@ -171,6 +171,47 @@ without_cli() {
 count_lines() {
   grep -cxF "$2" "$1" 2>/dev/null || true
 }
+
+# Print the previous state of a repo: config value, ignore and attribute files,
+# graphify-out/, the hooks, merge.graphify.* and the notice marker.
+snapshot_state() {
+  local dir="$1" f
+  echo "warden.graphify: $(git -C "$dir" config --local --get warden.graphify 2>/dev/null || echo absent)"
+  git -C "$dir" config --local --get-regexp '^warden\.' 2>/dev/null | LC_ALL=C sort || true
+  for f in .gitignore .gitattributes; do
+    if [[ -e "$dir/$f" ]]; then
+      echo "$f: $(shasum "$dir/$f" | cut -d' ' -f1)"
+    else
+      echo "$f: absent"
+    fi
+  done
+  if [[ -d "$dir/graphify-out" ]]; then
+    echo "graphify-out: present"
+    (cd "$dir/graphify-out" && find . | LC_ALL=C sort && find . -type f -exec shasum {} + | LC_ALL=C sort -k2)
+  else
+    echo "graphify-out: absent"
+  fi
+  (cd "$dir/.git/hooks" && find . -type f -exec shasum {} + | LC_ALL=C sort -k2)
+  git -C "$dir" config --local --get-regexp '^merge\.graphify\.' 2>/dev/null || true
+  if [[ -e "$XDG_CACHE_HOME/warden/graphify-install-mentioned" ]]; then echo "marker: present"; else echo "marker: absent"; fi
+  if [[ -e "$XDG_CACHE_HOME/warden" ]]; then echo "marker folder: present"; else echo "marker folder: absent"; fi
+}
+
+# Compare the state now with a snapshot taken before.
+assert_unchanged() {
+  local dir="$1" before="$2" description="$3"
+  assert_eq "$(snapshot_state "$dir")" "$before" "$description"
+}
+
+BLOCK_GIT="graphify-setup: cannot run here: git does not run in this shell. Nothing was changed."
+BLOCK_GRAPHIFY="graphify-setup: cannot run here: graphify does not run in this shell. Nothing was changed."
+BLOCK_CONFIG="graphify-setup: cannot run here: .git/config is not writable. Nothing was changed."
+
+# Make git refuse writes to the local config. A leftover config.lock makes git
+# fail the way a write-protected .git/config does in a sandbox. (chmod a-w on
+# .git/config alone does not stop git: it writes a lock file and renames it.)
+block_config() { : >"$1/.git/config.lock"; }
+unblock_config() { rm -f "$1/.git/config.lock"; }
 
 make_fake_graphify
 
@@ -329,8 +370,14 @@ run_in "$TEST_ROOT/f1" "$(with_fake)" status
 assert_eq "$OUT" "ask" "status stays ask after a failed build"
 make_repo "$TEST_ROOT/f1b" 20
 mkdir -p "$TEST_ROOT/f1b/graphify-out" && echo keep >"$TEST_ROOT/f1b/graphify-out/notes"
+echo '{"old":1}' >"$TEST_ROOT/f1b/graphify-out/graph.json"
+before="$(snapshot_state "$TEST_ROOT/f1b")"
 FAKE_GRAPHIFY_FAIL=update run_in "$TEST_ROOT/f1b" "$(with_fake)" setup
 assert_true "a graphify-out/ that existed before is kept" test -f "$TEST_ROOT/f1b/graphify-out/notes"
+assert_eq "$RC" "1" "failing build over an existing graphify-out/ exits 1"
+assert_unchanged "$TEST_ROOT/f1b" "$before" "failing build restores the previous graphify-out/ byte for byte"
+assert_eq "$(cat "$TEST_ROOT/f1b/graphify-out/graph.json")" '{"old":1}' "previous graph.json is back"
+assert_false "no half-written graph.json.tmp is left" test -e "$TEST_ROOT/f1b/graphify-out/graph.json.tmp"
 make_repo "$TEST_ROOT/f1c" 20
 FAKE_GRAPHIFY_FAIL=update-empty run_in "$TEST_ROOT/f1c" "$(with_fake)" setup
 assert_eq "$RC" "1" "setup exits 1 when update succeeds but writes no graph.json"
@@ -579,46 +626,6 @@ assert_false "no marker when the notice could not be written" test -e "$marker"
 
 # ---- Fail cleanly where the script cannot run (REQ-3 to REQ-5) ----
 
-# Print the previous state of a repo: config value, ignore and attribute files,
-# graphify-out/, the hooks, merge.graphify.* and the notice marker.
-snapshot_state() {
-  local dir="$1" f
-  echo "warden.graphify: $(git -C "$dir" config --local --get warden.graphify 2>/dev/null || echo absent)"
-  for f in .gitignore .gitattributes; do
-    if [[ -e "$dir/$f" ]]; then
-      echo "$f: $(shasum "$dir/$f" | cut -d' ' -f1)"
-    else
-      echo "$f: absent"
-    fi
-  done
-  if [[ -d "$dir/graphify-out" ]]; then
-    echo "graphify-out: present"
-    (cd "$dir/graphify-out" && find . | LC_ALL=C sort)
-  else
-    echo "graphify-out: absent"
-  fi
-  (cd "$dir/.git/hooks" && find . -type f -exec shasum {} + | LC_ALL=C sort -k2)
-  git -C "$dir" config --local --get-regexp '^merge\.graphify\.' 2>/dev/null || true
-  if [[ -e "$XDG_CACHE_HOME/warden/graphify-install-mentioned" ]]; then echo "marker: present"; else echo "marker: absent"; fi
-  if [[ -e "$XDG_CACHE_HOME/warden" ]]; then echo "marker folder: present"; else echo "marker folder: absent"; fi
-}
-
-# Compare the state now with a snapshot taken before.
-assert_unchanged() {
-  local dir="$1" before="$2" description="$3"
-  assert_eq "$(snapshot_state "$dir")" "$before" "$description"
-}
-
-BLOCK_GIT="graphify-setup: cannot run here: git does not run in this shell. Nothing was changed."
-BLOCK_GRAPHIFY="graphify-setup: cannot run here: graphify does not run in this shell. Nothing was changed."
-BLOCK_CONFIG="graphify-setup: cannot run here: .git/config is not writable. Nothing was changed."
-
-# Make git refuse writes to the local config. A leftover config.lock makes git
-# fail the way a write-protected .git/config does in a sandbox. (chmod a-w on
-# .git/config alone does not stop git: it writes a lock file and renames it.)
-block_config() { : >"$1/.git/config.lock"; }
-unblock_config() { rm -f "$1/.git/config.lock"; }
-
 echo "Test: git does not run"
 STUB_GIT_BIN="$TEST_ROOT/stub-git-bin"
 mkdir -p "$STUB_GIT_BIN"
@@ -687,6 +694,7 @@ assert_unchanged "$TEST_ROOT/bfail" "$before" "build failure: state is unchanged
 echo "Test: .gitignore is not writable after the first write"
 make_repo "$TEST_ROOT/ifail" 20
 printf 'node_modules' >"$TEST_ROOT/ifail/.gitignore"
+mkdir -p "$TEST_ROOT/ifail/graphify-out" && echo '{"old":1}' >"$TEST_ROOT/ifail/graphify-out/graph.json"
 chmod a-w "$TEST_ROOT/ifail/.gitignore"
 before="$(snapshot_state "$TEST_ROOT/ifail")"
 run_in "$TEST_ROOT/ifail" "$(with_fake)" setup
@@ -702,6 +710,7 @@ printf 'node_modules/\n' >"$TEST_ROOT/hfail/.gitignore"
 printf '*.png binary\n' >"$TEST_ROOT/hfail/.gitattributes"
 git -C "$TEST_ROOT/hfail" config warden.graphify manual
 git -C "$TEST_ROOT/hfail" config merge.graphify.driver "my own driver"
+mkdir -p "$TEST_ROOT/hfail/graphify-out" && echo '{"old":1}' >"$TEST_ROOT/hfail/graphify-out/graph.json"
 before="$(snapshot_state "$TEST_ROOT/hfail")"
 FAKE_GRAPHIFY_FAIL=hook run_in "$TEST_ROOT/hfail" "$(with_fake)" setup
 assert_eq "$RC" "1" "hook failure: setup exits 1"
