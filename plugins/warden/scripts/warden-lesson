@@ -317,16 +317,138 @@ def _hook(args):
     return 0
 
 
-def _stub(args):
-    return 2
+def _add(args):
+    text = " ".join(args.text).strip()
+    if not text:
+        print('usage: warden-lesson add "<text>" [--by agent]', file=sys.stderr)
+        return 2
+    top, branch, commit = _git_info(os.getcwd())
+    obj = {"t": "lesson", "ts": _now(), "src": "agent" if args.by == "agent" else "user",
+           "text": text, "repo": os.path.basename(top) if top else "",
+           "branch": branch, "commit": commit}
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if sid:
+        obj["session_id"] = sid
+    if not write_line(os.path.join(inbox(), "manual.jsonl"), obj):
+        print("warden-lesson: capture is disabled; run warden-lesson status", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _read_lines(path):
+    out = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for ln in f:
+                try:
+                    d = json.loads(ln)
+                except ValueError:
+                    continue
+                if isinstance(d, dict):
+                    out.append(d)
+    except OSError:
+        pass
+    return out
+
+
+def _log_files():
+    root = inbox()
+    files = []
+    sessions = os.path.join(root, "sessions")
+    try:
+        files = [os.path.join(sessions, n) for n in sorted(os.listdir(sessions)) if n.endswith(".jsonl")]
+    except OSError:
+        pass
+    return files, os.path.join(root, "manual.jsonl")
+
+
+def _session_records(lines):
+    groups = {}
+    for i, d in enumerate(lines):
+        if d.get("t") != "fail":
+            continue
+        key = (d.get("cmd"), d.get("exit"), re.sub(r"\d+", "N", str(d.get("sig") or "")))
+        g = groups.get(key)
+        if g is None:
+            g = groups[key] = {"first": d, "count": 0, "last_i": i, "h": d.get("h")}
+        g["count"] += 1
+        g["last_i"] = i
+        g["h"] = g["h"] or d.get("h")
+    recs = []
+    for g in groups.values():
+        d = g["first"]
+        rec = {"t": "fail", "ts": lines[g["last_i"]].get("ts") or d.get("ts") or "", "src": d.get("src") or "hook",
+               "repo": d.get("repo") or "", "branch": d.get("branch") or "", "commit": d.get("commit") or "",
+               "cmd": d.get("cmd") or "", "exit": d.get("exit"), "sig": d.get("sig") or "",
+               "count": g["count"], "fixed": False}
+        if g["h"]:
+            for j in range(g["last_i"] + 1, len(lines)):
+                if lines[j].get("t") == "pass" and lines[j].get("h") == g["h"]:
+                    rec["fixed"] = True
+                    rec["fixed_by"] = lines[j].get("tool_use_id") or ""
+                    rec["edits"] = sum(1 for x in lines[g["last_i"] + 1:j] if x.get("t") == "edit")
+                    break
+        recs.append(rec)
+    return recs
+
+
+def _all_records():
+    files, manual = _log_files()
+    recs = []
+    for f in files:
+        recs.extend(_session_records(_read_lines(f)))
+    for d in _read_lines(manual):
+        if d.get("t") == "lesson":
+            recs.append({"t": "lesson", "ts": d.get("ts") or "", "src": d.get("src") or "user",
+                         "repo": d.get("repo") or "", "branch": d.get("branch") or "",
+                         "commit": d.get("commit") or "", "text": d.get("text") or "", "count": 1,
+                         "session_id": d.get("session_id") or ""})
+    recs.sort(key=lambda r: r["ts"], reverse=True)
+    return recs
+
+
+def _list(args):
+    recs = _all_records()
+    for r in recs:
+        if args.json:
+            print(json.dumps(r, ensure_ascii=False))
+            continue
+        what = r["text"] if r["t"] == "lesson" else r["sig"]
+        fixed = "-"
+        if r.get("fixed"):
+            fixed = "fixed(%s, %d edits)" % (r.get("fixed_by", ""), r.get("edits", 0))
+        print("  ".join([r["ts"][:10], r["src"], r["repo"] or "-", r.get("cmd") or "-",
+                         what or "-", "x%d" % r["count"], fixed]))
+    return 0
+
+
+def _status(args):
+    reasons = blocked_reasons()
+    files, manual = _log_files()
+    count, last = 0, ""
+    for f in files + [manual]:
+        for d in _read_lines(f):
+            count += 1
+            last = max(last, str(d.get("ts") or ""))
+    print("inbox: " + inbox())
+    print("capture: enabled" if not reasons else "capture: disabled (%s)" % ", ".join(reasons))
+    print("records: %d" % count)
+    print("last write: " + (last or "never"))
+    return 0
 
 
 def main(argv=None):
     import argparse  # Lazy: the hook path does not need it.
     parser = argparse.ArgumentParser(prog="warden-lesson")
     sub = parser.add_subparsers(dest="mode", required=True)
-    for mode in ("add", "list", "status"):
-        sub.add_parser(mode).set_defaults(func=_stub)
+    pa = sub.add_parser("add")
+    pa.add_argument("text", nargs="*")
+    pa.add_argument("--by", default="user")
+    pa.set_defaults(func=_add)
+    pl = sub.add_parser("list")
+    pl.add_argument("--json", action="store_true")
+    pl.set_defaults(func=_list)
+    sub.add_parser("status").set_defaults(func=_status)
     sub.add_parser("hook").set_defaults(func=_hook)
     args, _ = parser.parse_known_args(argv)
     return args.func(args)

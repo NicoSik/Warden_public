@@ -365,4 +365,90 @@ print("%.1f" % statistics.median(ts))' "$SCRIPT" "$FP")"
 echo "  median hook time: ${MED} ms"
 if python3 -I -c 'import sys; sys.exit(0 if float(sys.argv[1]) < 50 else 1)' "$MED"; then pass "median of 20 hook runs is under 50 ms ($MED ms)"; else fail "median hook time $MED ms"; fi
 
+# ---- Task 3: add, list, status, bin wrapper (REQ-4, REQ-5, REQ-11) ----
+unset CLAUDE_CODE_SESSION_ID
+NROOT_SET() { NROOT="$(python3 -I -c "import os,sys;print(os.path.abspath(sys.argv[1]))" "$ROOT")"; }
+WL() { python3 -I "$SCRIPT" "$@"; }
+jfail() { printf '{"t":"fail","ts":"%s","src":"hook","cmd":"%s","exit":1,"sig":"%s","session_id":"s","transcript_path":"","tool_use_id":"%s","repo":"r","branch":"b","commit":"c"%s}\n' "$1" "$2" "$3" "$4" "$5"; }
+jq1() { python3 -I -c 'import sys,json
+rs=[json.loads(l) for l in sys.stdin]
+'"$1"; }
+
+# L1. Repeated failure groups into one record.
+fresh_root; mkdir -p "$ROOT/sessions"
+for i in 1 2 3; do jfail "2026-10-01T00:00:0${i}Z" "make" "boom" "u$i" ""; done > "$ROOT/sessions/a.jsonl"
+if WL list --json | jq1 'assert len(rs)==1 and rs[0]["count"]==3, rs'; then pass "3 identical fails give one record, count 3"; else fail "repeated failure grouping"; fi
+
+# L2. Digit runs normalise in the key; first sig kept.
+fresh_root; mkdir -p "$ROOT/sessions"
+{ jfail "2026-10-01T00:00:01Z" "node" "Error: port 3000 in use" u1 ""; jfail "2026-10-01T00:00:02Z" "node" "Error: port 3001 in use" u2 ""; } > "$ROOT/sessions/a.jsonl"
+if WL list --json | jq1 'assert len(rs)==1 and rs[0]["count"]==2 and rs[0]["sig"]=="Error: port 3000 in use", rs'; then pass "numbers-only differences group, first sig kept"; else fail "digit normalisation"; fi
+
+# L3. Fixed test with two edits.
+fresh_root; mkdir -p "$ROOT/sessions"
+{ jfail "2026-10-01T00:00:01Z" "pytest" "E boom" u1 ',"h":"abcd1234abcd1234"'
+  echo '{"t":"edit","ts":"2026-10-01T00:00:02Z"}'; echo '{"t":"edit","ts":"2026-10-01T00:00:03Z"}'
+  echo '{"t":"pass","ts":"2026-10-01T00:00:04Z","tool_use_id":"tu_pass","h":"abcd1234abcd1234"}'; } > "$ROOT/sessions/a.jsonl"
+if WL list --json | jq1 'r=rs[0]; assert r["fixed"] is True and r["fixed_by"]=="tu_pass" and r["edits"]==2, r'; then pass "fixed test shows pass id and 2 edits"; else fail "fixed with edits"; fi
+WL list | grep -q 'fixed' && pass "list text shows fixed" || fail "list text lacks fixed"
+
+# L4. Plain rerun: edits 0.
+fresh_root; mkdir -p "$ROOT/sessions"
+{ jfail "2026-10-01T00:00:01Z" "pytest" "E boom" u1 ',"h":"abcd1234abcd1234"'
+  echo '{"t":"pass","ts":"2026-10-01T00:00:04Z","tool_use_id":"tu_pass","h":"abcd1234abcd1234"}'; } > "$ROOT/sessions/a.jsonl"
+if WL list --json | jq1 'r=rs[0]; assert r["fixed"] is True and r["edits"]==0, r'; then pass "plain rerun shows edits 0"; else fail "plain rerun"; fi
+
+# L5. Corrupt line skipped.
+fresh_root; mkdir -p "$ROOT/sessions"
+{ jfail "2026-10-01T00:00:01Z" "make" "boom" u1 ""; echo '{not json'; jfail "2026-10-01T00:00:02Z" "ls" "nope" u2 ""; } > "$ROOT/sessions/a.jsonl"
+if WL list --json | jq1 'assert len(rs)==2, rs'; then pass "corrupt line skipped, others listed"; else fail "corrupt line"; fi
+
+# L6. add.
+fresh_root
+WL add "fix the flaky port test" >/dev/null; WL add --by agent "x" >/dev/null
+WL add "leak ghp_abcdefghijklmnopqrstuvwxyz0123456789 here" >/dev/null
+WL add "$(python3 -I -c 'print("w "*150)')" >/dev/null
+CLAUDE_CODE_SESSION_ID=abc WL add "with sid" >/dev/null
+if python3 -I -c 'import sys,json
+ls=[json.loads(l) for l in open(sys.argv[1])]
+assert ls[0]["src"]=="user" and ls[0]["t"]=="lesson" and ls[0]["text"]=="fix the flaky port test" and "session_id" not in ls[0], ls[0]
+assert ls[1]["src"]=="agent"
+assert len(ls[3]["text"])==200, len(ls[3]["text"])
+assert ls[4]["session_id"]=="abc"
+assert set(ls[0])=={"t","ts","src","text","repo","branch","commit"}, set(ls[0])' "$ROOT/manual.jsonl" && ! grep -q ghp_ "$ROOT/manual.jsonl"; then pass "add: src, scrub, 200 cap, session_id, keys"; else fail "add behaviour"; fi
+OUT="$(WL add 2>&1)"; RC=$?
+if [ "$RC" = 2 ] && [ "$OUT" = 'usage: warden-lesson add "<text>" [--by agent]' ]; then pass "add without text exits 2 with usage"; else fail "add usage: rc=$RC out=$OUT"; fi
+
+# L7. Ordering and --json.
+fresh_root; mkdir -p "$ROOT/sessions"
+jfail "2026-10-01T00:00:01Z" "oldcmd" "old" u1 "" > "$ROOT/sessions/a.jsonl"
+jfail "2026-10-05T00:00:01Z" "newcmd" "new" u2 "" > "$ROOT/sessions/b.jsonl"
+printf '{"t":"lesson","ts":"2026-10-03T00:00:00Z","src":"user","text":"mid lesson","repo":"r","branch":"b","commit":"c"}\n' > "$ROOT/manual.jsonl"
+ORDER="$(WL list | awk '{print $0}' | grep -o 'newcmd\|mid lesson\|oldcmd' | tr '\n' ,)"
+[ "$ORDER" = "newcmd,mid lesson,oldcmd," ] && pass "list is newest first" || fail "list order: $ORDER"
+WL list | grep -q ' user ' && pass "list shows src" || fail "list lacks src"
+WL list --json | jq1 'assert len(rs)==3' && pass "list --json gives valid JSON lines" || fail "list --json"
+
+# L8. status.
+fresh_root
+NROOT_SET; OUT="$(WL status)"; RC=$?
+if [ "$RC" = 0 ] && grep -qx "inbox: $NROOT" <<<"$OUT" && grep -qx 'capture: enabled' <<<"$OUT" && grep -qx 'records: 0' <<<"$OUT" && grep -qx 'last write: never' <<<"$OUT"; then pass "status on empty inbox"; else fail "status empty: $OUT"; fi
+WL add one >/dev/null; WL add two >/dev/null
+LASTTS="$(python3 -I -c 'import sys,json
+print(json.loads(open(sys.argv[1]).readlines()[-1])["ts"])' "$ROOT/manual.jsonl")"
+OUT="$(WL status)"
+if grep -qx 'records: 2' <<<"$OUT" && grep -qx "last write: $LASTTS" <<<"$OUT"; then pass "status after two writes"; else fail "status count: $OUT"; fi
+OUT="$(WARDEN_LESSON_OFF=1 WL status)"; RC=$?
+if [ "$RC" = 0 ] && grep -qx 'capture: disabled (WARDEN_LESSON_OFF is 1)' <<<"$OUT"; then pass "status shows OFF reason"; else fail "status off: $OUT"; fi
+chmod 500 "$ROOT"; OUT="$(WL status)"; RC=$?; chmod 700 "$ROOT"
+if [ "$RC" = 0 ] && grep -qx 'capture: disabled (not writable)' <<<"$OUT"; then pass "status shows not writable"; else fail "status ro: $OUT"; fi
+G="$(mktemp -d "$HARNESS_TMP/git.XXXXXX")"; git -C "$G" init -q
+OUT="$(WARDEN_LESSON_ROOT="$G/inbox" WL status)"; RC=$?
+if [ "$RC" = 0 ] && grep -qx 'capture: disabled (inside a git work tree)' <<<"$OUT"; then pass "status shows git work tree reason"; else fail "status git: $OUT"; fi
+
+# L9. bin wrapper.
+fresh_root
+NROOT_SET; OUT="$(cd / && "$REPO_DIR/bin/warden-lesson" status 2>&1)"
+if grep -qx "inbox: $NROOT" <<<"$OUT" && grep -qx 'records: 0' <<<"$OUT"; then pass "bin/warden-lesson status works from another folder"; else fail "bin wrapper: $OUT"; fi
+
 harness_exit
