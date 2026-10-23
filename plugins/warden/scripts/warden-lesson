@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """warden-lesson: a lesson inbox outside every repository.
 
-Modes: hook, add, list, status. This file holds the store, the secret scrub and retention.
+Modes: hook, add, list, status. This file holds the store, the secret scrub, retention and the hook.
 """
-import argparse
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -50,17 +50,28 @@ def _nearest_existing(path):
     return path
 
 
+_GIT_TREE_CACHE = {}
+
+
 def _inside_git_work_tree(path):
     d = _nearest_existing(path)
     if not os.path.isdir(d):
         d = os.path.dirname(d)
-    try:
-        r = subprocess.run(
-            ["git", "-C", d, "rev-parse", "--is-inside-work-tree"],
-            capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return r.returncode == 0 and r.stdout.strip() == "true"
+    if d not in _GIT_TREE_CACHE:
+        _GIT_TREE_CACHE[d] = _probe_git_work_tree(d)
+    return _GIT_TREE_CACHE[d]
+
+
+def _probe_git_work_tree(d):
+    """True when d or a parent holds a .git entry. This avoids a git process on the hook path."""
+    d = os.path.abspath(d)
+    while True:
+        if os.path.exists(os.path.join(d, ".git")):
+            return True
+        parent = os.path.dirname(d)
+        if parent == d:
+            return False
+        d = parent
 
 
 def blocked_reasons():
@@ -175,15 +186,148 @@ def retention():
         return 0
 
 
+SKIP_EXIT = (0, 130, 143)
+QUIET_STARTS = ("grep", "rg", "test", "[", "diff", "cmp", "pgrep", "command -v", "which")
+SIG_WORDS = re.compile(r"error|fail|fatal|not found|denied|no such|cannot", re.I)
+PATH_RE = re.compile(r"(?:~|\.{1,2})?/[^\s:'\"]+|[A-Za-z]:\\\S+")
+SPLIT_RE = re.compile(r"&&|\|\||;|\||\n")
+ENV_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+")
+TEST_RE = re.compile(
+    r"^(?:pytest|py\.test|jest|vitest|mocha|rspec|tox"
+    r"|python3? -m (?:pytest|unittest)"
+    r"|(?:npm|pnpm|yarn|bun|cargo|go|dotnet|mix|gradle|mvn) test"
+    r"|make (?:test|check))(?:\s|$)")
+SH_TEST_RE = re.compile(r"(?:^|/)tests?/[^\s]*\.sh$")
+EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
+
+
+def last_simple(command):
+    parts = [p.strip() for p in SPLIT_RE.split(command or "") if p.strip()]
+    if not parts:
+        return ""
+    return ENV_RE.sub("", parts[-1])
+
+
+def is_test_like(command):
+    last = last_simple(command)
+    if TEST_RE.match(last):
+        return True
+    return any(SH_TEST_RE.search(w) for w in last.split())
+
+
+def cmd_name(command):
+    words = last_simple(command).split()
+    if not words:
+        return ""
+    name = os.path.basename(words[0]) or words[0]
+    if len(words) > 1 and re.fullmatch(r"[a-z][a-z-]*", words[1]):
+        name += " " + words[1]
+    return name[:CAPS["cmd"]]
+
+
+def signature(error):
+    lines = (error or "").split("\n")[1:]
+    lines = [ln.strip() for ln in lines if ln.strip()]
+    if not lines:
+        return ""
+    line = next((ln for ln in lines if SIG_WORDS.search(ln)), lines[-1])
+    return scrub(PATH_RE.sub("<path>", line))[:CAPS["sig"]]
+
+
+def _git_info(cwd):
+    """Run the three rev-parse calls in parallel. Each has a 2-second timeout and gives "" on error."""
+    argsets = [("--show-toplevel",), ("--abbrev-ref", "HEAD"), ("--short", "HEAD")]
+    procs = []
+    for a in argsets:
+        try:
+            procs.append(subprocess.Popen(["git", "-C", cwd, "rev-parse", *a],
+                                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True))
+        except Exception:
+            procs.append(None)
+    out = []
+    for pr in procs:
+        try:
+            o, _ = pr.communicate(timeout=2)
+            out.append(o.strip() if pr.returncode == 0 else "")
+        except Exception:
+            try:
+                pr.kill()
+            except Exception:
+                pass
+            out.append("")
+    return out
+
+
+def _now():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _skip_exit1(command):
+    last = last_simple(command)
+    if last.startswith("git diff") and "--quiet" in last.split():
+        return True
+    return any(last == w or last.startswith(w + " ") for w in QUIET_STARTS)
+
+
+def _hook(args):
+    try:
+        if os.environ.get("WARDEN_LESSON_OFF") == "1":
+            return 0
+        p = json.loads(sys.stdin.read())
+        if not isinstance(p, dict):
+            return 0
+        tool = p.get("tool_name")
+        event = p.get("hook_event_name")
+        sid = re.sub(r"[^A-Za-z0-9_-]", "", str(p.get("session_id") or "")) or "unknown"
+        path = os.path.join(inbox(), "sessions", sid + ".jsonl")
+        cwd = p.get("cwd") or ""
+        command = (p.get("tool_input") or {}).get("command") or ""
+        if event == "PostToolUseFailure":
+            if tool != "Bash" or p.get("is_interrupt"):
+                return 0
+            error = p.get("error") or ""
+            m = re.match(r"Exit code (\d+)", error)
+            if not m:
+                return 0
+            code = int(m.group(1))
+            if code in SKIP_EXIT or (code == 1 and _skip_exit1(command)):
+                return 0
+            top, branch, commit = _git_info(cwd)
+            obj = {
+                "t": "fail", "ts": _now(), "src": "hook", "cmd": cmd_name(command),
+                "exit": code, "sig": signature(error), "session_id": p.get("session_id") or "",
+                "transcript_path": p.get("transcript_path") or "",
+                "tool_use_id": p.get("tool_use_id") or "",
+                "repo": os.path.basename(top) if top else "",
+                "branch": branch, "commit": commit,
+            }
+            if is_test_like(command):
+                obj["h"] = hashlib.sha256((command + "\0" + cwd).encode()).hexdigest()[:16]
+            write_line(path, obj)
+        elif event == "PostToolUse":
+            if tool == "Bash" and is_test_like(command):
+                h = hashlib.sha256((command + "\0" + cwd).encode()).hexdigest()[:16]
+                write_line(path, {"t": "pass", "ts": _now(),
+                                  "tool_use_id": p.get("tool_use_id") or "", "h": h})
+            elif tool in EDIT_TOOLS:
+                write_line(path, {"t": "edit", "ts": _now()})
+        retention()
+    except BaseException:
+        pass
+    return 0
+
+
 def _stub(args):
     return 2
 
 
 def main(argv=None):
+    import argparse  # Lazy: the hook path does not need it.
     parser = argparse.ArgumentParser(prog="warden-lesson")
     sub = parser.add_subparsers(dest="mode", required=True)
-    for mode in ("hook", "add", "list", "status"):
+    for mode in ("add", "list", "status"):
         sub.add_parser(mode).set_defaults(func=_stub)
+    sub.add_parser("hook").set_defaults(func=_hook)
     args, _ = parser.parse_known_args(argv)
     return args.func(args)
 

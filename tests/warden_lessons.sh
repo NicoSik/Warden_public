@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# REQ-6, REQ-7. The lesson store, the secret scrub and retention.
+# REQ-1, REQ-2, REQ-3, REQ-6, REQ-7, REQ-9. The lesson store, the secret scrub, retention and hook capture.
 . "$(dirname "$0")/lib/harness.sh"
 harness_setup
 
-SCRIPT="$REPO_DIR/plugins/warden/scripts/warden-lesson"
+SCRIPT="${WARDEN_LESSON_SCRIPT:-$REPO_DIR/plugins/warden/scripts/warden-lesson}"
 GUARD="$REPO_DIR/hooks/guard-secrets.sh"
 
 # py CODE: run CODE with the script loaded as module `wl`. Extra args reach sys.argv[1:].
@@ -200,5 +200,169 @@ assert "AKIA" not in d["transcript_path"], d
 else
   fail "pointer key handling wrong"
 fi
+# ---- Hook capture (REQ-1, REQ-2, REQ-3, REQ-9) ----
+SID="0d58bfb4-0612-44d9-8983-96d3a37be97e"
+TP="/Volumes/x/.claude/projects/p/$SID.jsonl"
+REPO="$(mktemp -d "$HARNESS_TMP/proj.XXXXXX")/myrepo"
+mkdir -p "$REPO"
+git -C "$REPO" init -q -b main
+git -C "$REPO" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+COMMIT="$(git -C "$REPO" rev-parse --short HEAD)"
+
+# payload EVENT TOOL COMMAND ERROR [INTERRUPT]: print a synthetic payload as JSON.
+payload() {
+  python3 -I -c '
+import json, sys
+ev, tool, cmd, err, intr, cwd = sys.argv[1:7]
+p = {"hook_event_name": ev, "tool_name": tool, "session_id": "'"$SID"'", "transcript_path": "'"$TP"'",
+     "tool_use_id": "toolu_01ABC", "cwd": cwd, "tool_input": {"command": cmd}, "is_interrupt": intr == "1"}
+if ev == "PostToolUseFailure":
+    p["error"] = err
+else:
+    p["tool_response"] = {"stdout": "", "stderr": "", "interrupted": False}
+print(json.dumps(p))' "$1" "$2" "$3" "$4" "${5:-0}" "${HOOK_CWD:-$REPO}"
+}
+sess() { echo "$ROOT/sessions/$SID.jsonl"; }
+nlines() { [ -f "$(sess)" ] && wc -l < "$(sess)" | tr -d ' ' || echo 0; }
+# run_hook PAYLOAD: run the hook, return its stdout+stderr in HOOK_OUT and its status in HOOK_RC.
+run_hook() {
+  HOOK_OUT="$(printf '%s' "$1" | python3 -I "$SCRIPT" hook 2>&1)"; HOOK_RC=$?
+}
+fail_payload() { payload PostToolUseFailure Bash "$1" "$2" "${3:-0}"; }
+# jl FIELD [LINE]: print FIELD of line LINE (default last) of the session log.
+jl() {
+  python3 -I -c '
+import json, sys
+lines = open(sys.argv[1]).read().splitlines()
+d = json.loads(lines[int(sys.argv[3])])
+print(d.get(sys.argv[2], "<absent>"))' "$(sess)" "$1" "${2:--1}"
+}
+keys() {
+  python3 -I -c '
+import json, sys
+print(",".join(sorted(json.loads(open(sys.argv[1]).read().splitlines()[-1]))))' "$(sess)"
+}
+
+# H1. false: exit 1, no output.
+fresh_root
+run_hook "$(fail_payload false 'Exit code 1')"
+FAILKEYS="branch,cmd,commit,exit,repo,session_id,sig,src,t,tool_use_id,transcript_path,ts"
+if [ "$(nlines)" = 1 ] && [ "$(jl t)" = fail ] && [ "$(jl cmd)" = false ] && [ -z "$(jl sig)" ] \
+   && [ "$(keys)" = "$FAILKEYS" ] && [ "$(jl exit)" = 1 ] && [ "$(jl src)" = hook ] \
+   && [ "$(jl repo)" = myrepo ] && [ "$(jl branch)" = main ] && [ "$(jl commit)" = "$COMMIT" ] \
+   && [ "$(jl session_id)" = "$SID" ] && [ "$(jl transcript_path)" = "$TP" ] \
+   && jl ts | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$'; then
+  pass "false: one fail line with the exact key set and git fields"
+else
+  fail "false: line wrong: $(cat "$(sess)" 2>/dev/null)"
+fi
+
+# H2. pytest-style failure.
+fresh_root
+ERR=$'Exit code 1\n============ test session starts ============\ncollected 3 items\ntests/test_x.py F..\nE   AssertionError: assert 2 == 3 in /Volumes/x/proj/tests/test_x.py\nFAILED tests/test_x.py::test_add - AssertionError'
+run_hook "$(fail_payload 'pytest -q' "$ERR")"
+SIG="$(jl sig)"
+if [ "$SIG" = "E   AssertionError: assert 2 == 3 in <path>" ] || [ "$SIG" = "E AssertionError: assert 2 == 3 in <path>" ]; then
+  pass "pytest failure: sig is the E line with the path replaced"
+else
+  fail "pytest sig wrong: '$SIG'"
+fi
+if [ "$(jl h)" != "<absent>" ] && [ ${#SIG} -le 120 ]; then pass "test-like fail line holds h"; else fail "test-like fail line has no h"; fi
+EXPECTH="$(python3 -I -c 'import hashlib,sys;print(hashlib.sha256((sys.argv[1]+"\0"+sys.argv[2]).encode()).hexdigest()[:16])' 'pytest -q' "$REPO")"
+[ "$(jl h)" = "$EXPECTH" ] && pass "h is sha256(command, zero byte, cwd), 16 hex characters" || fail "h wrong: $(jl h) vs $EXPECTH"
+
+# H3. No matching line: last non-empty line.
+fresh_root
+run_hook "$(fail_payload 'make build' $'Exit code 2\nstep one\nstep two\n\n')"
+[ "$(jl sig)" = "step two" ] && pass "no matching line: sig is the last non-empty line" || fail "last-line sig wrong: '$(jl sig)'"
+[ "$(jl h)" = "<absent>" ] && pass "non-test fail line has no h" || fail "non-test fail line holds h"
+
+# H4. Skips.
+fresh_root
+run_hook "$(fail_payload 'make x' 'Exit code 0')"
+run_hook "$(fail_payload 'make x' 'Exit code 130')"
+run_hook "$(fail_payload 'make x' 'Exit code 143')"
+run_hook "$(fail_payload 'make x' 'Exit code 2' 1)"
+run_hook "$(fail_payload 'grep foo x' 'Exit code 1')"
+run_hook "$(fail_payload 'cd a && rg x' 'Exit code 1')"
+run_hook "$(fail_payload 'git diff --quiet' 'Exit code 1')"
+run_hook "$(fail_payload 'test -f x' 'Exit code 1')"
+run_hook "$(payload PostToolUseFailure Edit 'x' 'Exit code 2')"
+[ "$(nlines)" = 0 ] && pass "skipped exits, interrupt, quiet-check commands and non-Bash write nothing" || fail "a skipped payload wrote: $(cat "$(sess)")"
+run_hook "$(fail_payload 'grep foo x' 'Exit code 2')"
+[ "$(nlines)" = 1 ] && pass "grep with exit 2 writes a line" || fail "grep exit 2 wrote nothing"
+
+# H5. cmd.
+fresh_root
+LONGW="$(printf 'abcdefghi.%.0s' $(seq 1 6))"
+run_hook "$(fail_payload 'git push origin main' 'Exit code 1')"
+run_hook "$(fail_payload '/usr/bin/python3 -c x' 'Exit code 1')"
+run_hook "$(fail_payload "$LONGW arg" 'Exit code 1')"
+if [ "$(jl cmd 0)" = "git push" ] && [ "$(jl cmd 1)" = python3 ] && [ "$(jl cmd 2)" = "$(printf 'abcdefghi.%.0s' 1 2 3 4)" ]; then
+  pass "cmd: git push, python3, 60-character word cut to 40"
+else
+  fail "cmd wrong: '$(jl cmd 0)' '$(jl cmd 1)' '$(jl cmd 2)'"
+fi
+
+# H6. Test-like list, pass and edit lines.
+if py '
+for c in ["pytest -q", "py.test x", "jest", "vitest run", "mocha", "rspec", "tox", "python -m pytest", "python -m unittest",
+          "python3 -m pytest -x", "python3 -m unittest d", "npm test", "pnpm test", "yarn test", "bun test", "cargo test",
+          "go test ./...", "dotnet test", "mix test", "gradle test", "mvn test", "make test", "make check",
+          "bash tests/run.sh", "cd x && ./test/a.sh"]:
+    assert wl.is_test_like(c), c
+for c in ["ls", "make build", "npm install", "bash run.sh", "echo pytest"]:
+    assert not wl.is_test_like(c), c
+'; then pass "test-like list matches REQ-3.1 case by case"; else fail "test-like list wrong"; fi
+fresh_root
+run_hook "$(payload PostToolUse Bash 'pytest -q' '')"
+if [ "$(nlines)" = 1 ] && [ "$(keys)" = "h,t,tool_use_id,ts" ] && [ "$(jl t)" = pass ]; then
+  pass "PostToolUse pytest writes a pass line with exactly t, ts, tool_use_id, h"
+else fail "pass line wrong: $(cat "$(sess)" 2>/dev/null)"; fi
+run_hook "$(payload PostToolUse Bash 'ls' '')"
+[ "$(nlines)" = 1 ] && pass "PostToolUse ls writes nothing" || fail "ls wrote a line"
+for tool in Edit Write MultiEdit NotebookEdit; do
+  run_hook "$(payload PostToolUse "$tool" 'x' '')"
+  if [ "$(jl t)" = edit ] && [ "$(keys)" = "t,ts" ]; then pass "$tool writes an edit line with exactly t, ts"; else fail "$tool line wrong"; fi
+done
+
+# H7. The full command text never appears.
+fresh_root
+run_hook "$(fail_payload 'git push origin UNIQUEMARKER42' 'Exit code 1')"
+run_hook "$(payload PostToolUse Bash 'pytest -q UNIQUEMARKER42' '')"
+if [ "$(nlines)" = 2 ] && ! grep -rq UNIQUEMARKER42 "$ROOT"; then pass "full command text never reaches the inbox"; else fail "marker leaked or lines missing"; fi
+
+# H8. A planted secret in the failure output.
+fresh_root
+run_hook "$(fail_payload 'curl x' $'Exit code 22\nerror: denied for password=hunter2hunter2 and ghp_abcdefghijklmnopqrstuvwx')"
+if [ "$(nlines)" = 1 ] && ! grep -rqE 'hunter2|ghp_abcdef' "$ROOT"; then pass "secret in failure output is not in the inbox"; else fail "secret leaked: $(cat "$(sess)" 2>/dev/null)"; fi
+
+# H9. Off switch, bad JSON, read-only inbox.
+fresh_root
+OUT="$(WARDEN_LESSON_OFF=1 python3 -I "$SCRIPT" hook </dev/null 2>&1)"; RC=$?
+if [ "$RC" = 0 ] && [ -z "$OUT" ] && [ ! -e "$ROOT" ]; then pass "WARDEN_LESSON_OFF=1 with no stdin exits 0 and writes nothing"; else fail "off switch: rc=$RC out='$OUT'"; fi
+OUT="$(printf '%s' "$(fail_payload false 'Exit code 1')" | WARDEN_LESSON_OFF=1 python3 -I "$SCRIPT" hook 2>&1)"; RC=$?
+if [ "$RC" = 0 ] && [ -z "$OUT" ] && [ ! -e "$ROOT" ]; then pass "WARDEN_LESSON_OFF=1 with a payload writes nothing"; else fail "off switch with payload"; fi
+run_hook 'not json {'
+[ "$HOOK_RC" = 0 ] && [ -z "$HOOK_OUT" ] && pass "invalid JSON exits 0 with no output" || fail "invalid JSON: rc=$HOOK_RC out='$HOOK_OUT'"
+fresh_root
+mkdir -p "$ROOT" && chmod 500 "$ROOT"
+run_hook "$(fail_payload false 'Exit code 1')"
+if [ "$HOOK_RC" = 0 ] && [ -z "$HOOK_OUT" ] && [ -z "$(ls -A "$ROOT")" ]; then pass "read-only inbox exits 0 with no output"; else fail "read-only inbox: rc=$HOOK_RC out='$HOOK_OUT'"; fi
+chmod 700 "$ROOT"
+
+# H10. Timing: median of 20 runs under 50 ms.
+fresh_root
+FP="$(fail_payload 'pytest -q' $'Exit code 1\nE   AssertionError: x')"
+MED="$(python3 -I -c '
+import subprocess, sys, time, statistics
+ts = []
+for _ in range(20):
+    t = time.perf_counter()
+    subprocess.run(["python3", "-I", sys.argv[1], "hook"], input=sys.argv[2], text=True, capture_output=True)
+    ts.append((time.perf_counter() - t) * 1000)
+print("%.1f" % statistics.median(ts))' "$SCRIPT" "$FP")"
+echo "  median hook time: ${MED} ms"
+if python3 -I -c 'import sys; sys.exit(0 if float(sys.argv[1]) < 50 else 1)' "$MED"; then pass "median of 20 hook runs is under 50 ms ($MED ms)"; else fail "median hook time $MED ms"; fi
 
 harness_exit
