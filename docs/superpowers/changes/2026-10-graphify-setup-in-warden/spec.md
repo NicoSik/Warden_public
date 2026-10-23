@@ -1,6 +1,6 @@
 # Spec: graphify-setup-in-warden
 
-Intent: `intent.md`. Date: 2026-10-23. Status: draft.
+Intent: `intent.md`. Date: 2026-10-23. Status: approved.
 
 ## Summary
 
@@ -132,7 +132,8 @@ nothing. The tests assert both names.*
 - **REQ-8.1** The `triggered` grader of each setup case MUST match an unquoted
   `graphify-setup status` and a quoted `"…/graphify-setup" status`.
 
-*Proof: see Flagged concern C1. The rerun record shows the candidate arm's counts.*
+*Proof: `tests/behavior/tests/grader_patterns.sh` runs the pattern of each setup grader against
+the five strings in the C1 ruling. The rerun record shows the candidate arm's counts.*
 *Source: decision of 2026-10-23 (quoted path) against the existing grader. See C1.*
 
 ### Operations
@@ -199,6 +200,13 @@ setup cases would then score 0 for a harness reason. Options:
   graders still fail on the quoted form.
 
 Owner: Nicolai.
+
+**Ruling 2026-10-23: C1-a.** The plan builds it test-first. An offline check runs the new
+pattern against the unquoted form, the quoted form, the JSON-escaped form, PR #2's old command
+form and one string that must not match. The pattern is frozen in a commit before any eval
+run. PR #5's golden setup fixtures rerun to show that `record.py` grades the old records
+unchanged. Those fixtures replay the stored grader verdicts, so they cannot test the pattern
+itself. The old traces are gone, so the offline check is the evidence for the pattern.
 
 ## Open questions carried from intent
 
