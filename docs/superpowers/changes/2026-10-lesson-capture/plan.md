@@ -208,10 +208,13 @@ Test command: `bash tests/warden_hooks.sh`.
 4. Record the real inbox again and compare it with step 1.
 5. Find the kept temp folder named in `r.json` and check what its `home/.claude/lessons/sessions/` holds.
 
+The command bypasses `tests/behavior/run-behavior`, which normally adds `--no-publish`. This task therefore keeps the command in a shell variable and checks it before running it.
+
 **Steps:**
+- [ ] Put the step 3 command in a variable. Run `case " $CMD " in *" --no-publish "*) ;; *) echo "missing --no-publish"; exit 1 ;; esac` and see it pass. Only then run the command.
 - [ ] Run the check and show both listings and the temp-home listing.
 - [ ] If the real inbox changed, stop and report. Do not change the hook.
-- [ ] Delete the scratch copy and the kept temp folder (`chmod -R u+rwx` first).
+- [ ] Delete the kept temp folder named in `r.json`: run `chmod -R u+rwx` on it first, then `rm -rf`, then show that the path no longer exists. Delete the scratch copy the same way.
 - [ ] Write the result into the PR body draft.
 
 ### Task 6: PR and handover
