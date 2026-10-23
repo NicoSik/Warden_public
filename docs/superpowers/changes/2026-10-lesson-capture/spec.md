@@ -23,7 +23,7 @@ is still one subsystem.
 - **The manual log** is `<inbox>/manual.jsonl`.
 - **A line** is one JSON object on one line of a session log or the manual log.
 - **The last simple command** is the text after the last `&&`, `||`, `;` or `|` of the
-  command, with leading spaces removed.
+  command, without its leading spaces.
 - **A test-like command** is a command whose last simple command matches the list in
   REQ-3.1.
 - **The scrub** replaces every match of the secret patterns in REQ-7 with `<secret>`.
