@@ -36,6 +36,7 @@ Size: 9 requirements from 15 intent items.
   session-start matcher in `plugins/superpowers/hooks/hooks.json`. Today that string is
   `startup|clear|compact`.
 - **REQ-1.2** The injected context MUST equal the rule text byte for byte.
+  Amended for SessionStart by `2026-10-graphify-setup-in-warden` REQ-1.
 - **REQ-1.3** The `warden` plugin MUST inject the rule text whether `graphify-out/graph.json`
   exists or not. The rule text states its own condition.
 - **REQ-1.4** The `code-map` hook MUST exit non-zero with no output when it cannot produce the

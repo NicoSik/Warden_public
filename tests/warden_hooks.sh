@@ -16,12 +16,95 @@ for event in SessionStart SubagentStart; do
     fail "$event output does not parse or names the wrong event"
   fi
   jq -j '.hookSpecificOutput.additionalContext' "$out" > "$HARNESS_TMP/$event.txt" 2>/dev/null
-  if cmp -s "$HARNESS_TMP/$event.txt" "$W/hooks/code-map.md"; then
-    pass "$event additionalContext equals code-map.md byte for byte"
-  else
-    fail "$event additionalContext differs from code-map.md"
+  if [ "$event" = SubagentStart ]; then
+    if cmp -s "$HARNESS_TMP/$event.txt" "$W/hooks/code-map.md"; then
+      pass "$event additionalContext equals code-map.md byte for byte"
+    else
+      fail "$event additionalContext differs from code-map.md"
+    fi
   fi
 done
+
+# REQ-1: SessionStart = code-map.md + setup-check.md with the placeholder replaced by the script path.
+SETUP_PATH="$(cd -P "$W/scripts" && pwd)/graphify-setup"
+PH='{{GRAPHIFY_SETUP}}'
+if [ -f "$W/hooks/setup-check.md" ]; then
+  want_text="$(cat "$W/hooks/code-map.md" && printf x)"; want_text="${want_text%x}"
+  sc="$(cat "$W/hooks/setup-check.md" && printf x)"; sc="${sc%x}"
+  printf '%s%s' "$want_text" "${sc//\{\{GRAPHIFY_SETUP\}\}/$SETUP_PATH}" > "$HARNESS_TMP/want.txt"
+else
+  : > "$HARNESS_TMP/want.txt"
+fi
+if [ -s "$HARNESS_TMP/want.txt" ] && cmp -s "$HARNESS_TMP/SessionStart.txt" "$HARNESS_TMP/want.txt"; then
+  pass "SessionStart additionalContext equals code-map.md + setup-check.md with the script path"
+else
+  fail "SessionStart additionalContext differs from code-map.md + resolved setup-check.md"
+fi
+if grep -qF "\"$SETUP_PATH\" status" "$HARNESS_TMP/SessionStart.txt"; then
+  pass "SessionStart holds the quoted command \"<path>\" status"
+else
+  fail "SessionStart lacks the quoted command \"$SETUP_PATH\" status"
+fi
+
+# A plugin root with a space: the quoted command must run as printed.
+SP="$HARNESS_TMP/plugin root"
+mkdir -p "$SP"
+cp -R "$W/hooks" "$W/scripts" "$SP/"
+jq -j '.hookSpecificOutput.additionalContext' <("$SP/hooks/code-map" SessionStart 2>/dev/null) > "$HARNESS_TMP/sp.txt" 2>/dev/null
+SP_REAL="$(cd -P "$SP" && pwd)"
+if grep -qF "\"$SP_REAL/scripts/graphify-setup\" status" "$HARNESS_TMP/sp.txt"; then
+  pass "spaced plugin root: output holds the quoted path with the space"
+else
+  fail "spaced plugin root: quoted path missing from output"
+fi
+cmd="\"$SP_REAL/scripts/graphify-setup\" status"
+mkdir -p "$HARNESS_TMP/repo"
+git -C "$HARNESS_TMP/repo" init -q 2>/dev/null
+word=$(cd "$HARNESS_TMP/repo" && bash -c "$cmd" 2>/dev/null) || true
+case "$word" in
+  ready|declined|small|no-cli|build|ask|unavailable) pass "spaced plugin root: printed command runs and prints '$word'" ;;
+  *) fail "spaced plugin root: command printed '$word'" ;;
+esac
+
+# The placeholder appears exactly once; zero or two must fail loud.
+n=$(grep -o -F "$PH" "$W/hooks/setup-check.md" 2>/dev/null | wc -l | tr -d ' ')
+[ "$n" = 1 ] && pass "setup-check.md holds the placeholder exactly once" || fail "setup-check.md holds the placeholder $n times (want 1)"
+for count in 0 2; do
+  d="$HARNESS_TMP/ph$count"
+  mkdir -p "$d"
+  cp -R "$W/hooks" "$W/scripts" "$d/"
+  if [ "$count" = 0 ]; then
+    printf 'no placeholder here\n' > "$d/hooks/setup-check.md"
+  else
+    printf '"%s" status\n"%s" status\n' "$PH" "$PH" > "$d/hooks/setup-check.md"
+  fi
+  rc=0
+  stdout=$("$d/hooks/code-map" SessionStart 2>/dev/null) || rc=$?
+  if [ "$rc" -ne 0 ] && [ -z "$stdout" ]; then
+    pass "$count placeholders: exits non-zero with empty stdout"
+  else
+    fail "$count placeholders must exit non-zero with empty stdout (rc=$rc)"
+  fi
+done
+
+# A missing script must fail loud.
+d="$HARNESS_TMP/noscript"
+mkdir -p "$d"
+cp -R "$W/hooks" "$d/"
+rc=0
+stdout=$("$d/hooks/code-map" SessionStart 2>/dev/null) || rc=$?
+if [ "$rc" -ne 0 ] && [ -z "$stdout" ]; then
+  pass "missing scripts/graphify-setup exits non-zero with empty stdout"
+else
+  fail "missing scripts/graphify-setup must exit non-zero with empty stdout (rc=$rc)"
+fi
+
+# The text names no namespace and no skill.
+if grep -qiE 'warden:|superpowers:|skill' "$W/hooks/setup-check.md" 2>/dev/null; then
+  fail "setup-check.md names a namespace or a skill"
+else
+  [ -f "$W/hooks/setup-check.md" ] && pass "setup-check.md names no namespace and no skill" || fail "setup-check.md missing"
+fi
 
 H="$W/hooks/hooks.json"
 [ "$(jq '.hooks.SessionStart | length' "$H" 2>/dev/null)" = 1 ] && pass "one SessionStart entry" || fail "SessionStart must have one entry"
