@@ -15,8 +15,8 @@ sys.dont_write_bytecode = True
 
 MAX_LINE = 512
 RETENTION_DAYS = 30
-# Keys that Claude Code or this script supplies. Only the long-run rule skips them.
-POINTER_KEYS = frozenset({"session_id", "transcript_path", "tool_use_id", "h", "ts"})
+# Keys whose values are identifiers (Claude Code pointers, git branch and commit). Only the long-run rule skips them; named secret shapes still apply.
+RUN_RULE_EXEMPT_KEYS = frozenset({"session_id", "transcript_path", "tool_use_id", "h", "ts", "branch", "commit"})
 CAPS = {"cmd": 40, "sig": 120, "text": 200}
 
 # Every shape of hooks/guard-secrets.sh, then the extra shapes of REQ-7.1.
@@ -100,7 +100,7 @@ def _encode(obj):
 
 def _fit(obj):
     """Scrub and cap every string value, then shorten the longest one until the line fits."""
-    obj = {k: (scrub(v, k not in POINTER_KEYS) if isinstance(v, str) else v) for k, v in obj.items()}
+    obj = {k: (scrub(v, k not in RUN_RULE_EXEMPT_KEYS) if isinstance(v, str) else v) for k, v in obj.items()}
     for k, n in CAPS.items():
         if isinstance(obj.get(k), str):
             obj[k] = obj[k][:n]

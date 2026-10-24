@@ -200,6 +200,26 @@ assert "AKIA" not in d["transcript_path"], d
 else
   fail "pointer key handling wrong"
 fi
+# 9b. branch and commit skip only the long-run rule, like the pointer keys.
+fresh_root
+BR45="feature/lesson-capture-and-some-more-words-xy"
+if [ "${#BR45}" = 45 ] && py '
+import json, sys
+BR = sys.argv[1]
+SIG = "a" * 45
+assert wl.write_line(wl.inbox() + "/a.jsonl", {"t": "fail", "branch": BR, "commit": "e" * 40, "sig": SIG})
+d = json.loads(open(wl.inbox() + "/a.jsonl").read())
+assert d["branch"] == BR, d
+assert d["commit"] == "e" * 40, d
+assert d["sig"] == "<secret>", d
+assert wl.write_line(wl.inbox() + "/b.jsonl", {"t": "fail", "branch": "feature/AKIAABCDEFGHIJKLMNOP"})
+d = json.loads(open(wl.inbox() + "/b.jsonl").read())
+assert "AKIA" not in d["branch"] and "<secret>" in d["branch"], d
+' "$BR45"; then
+  pass "branch and commit keep long runs, named shape in branch replaced, sig run still replaced"
+else
+  fail "branch/commit exemption wrong"
+fi
 # ---- Hook capture (REQ-1, REQ-2, REQ-3, REQ-9) ----
 SID="0d58bfb4-0612-44d9-8983-96d3a37be97e"
 TP="/Volumes/x/.claude/projects/p/$SID.jsonl"
