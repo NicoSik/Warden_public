@@ -51,7 +51,8 @@ probe and asserts which payloads write a line.*
 **REQ-2** A `fail` line MUST hold only the fields below.
 
 - **REQ-2.1** `cmd`: the basename of the first word of the last simple command. A second
-  word follows when it matches `[a-z][a-z-]*`. The hook MUST cut the field to 40 characters.
+  word follows when it matches `[a-z][a-z-]*`. The hook MUST skip leading `NAME=value`
+  assignments first. The hook MUST cut the field to 40 characters.
 - **REQ-2.2** `exit`: the exit code.
 - **REQ-2.3** `sig`: the first output line after `Exit code N` that matches `error`,
   `fail`, `fatal`, `not found`, `denied`, `no such` or `cannot`, case-insensitive. When no
@@ -100,7 +101,8 @@ test-like list case by case.*
 - **REQ-4.3** `list` MUST print the records of all session logs and the manual log, newest
   first. Each row MUST show the date, `src`, `repo`, `cmd`, `sig` or the lesson text,
   `count` and `fixed`.
-- **REQ-4.4** `list --json` MUST print the same records as JSON lines.
+- **REQ-4.4** `list --json` MUST print the same records as JSON lines. Each JSON record MUST
+  also hold `fixed_by` and `edits`.
 - **REQ-4.5** `list` MUST skip a line that is not valid JSON.
 
 *Proof: `tests/warden_lessons.sh` covers a repeated failure, two failures that differ only in
@@ -116,6 +118,8 @@ corrupt line.*
 - **REQ-5.3** The command MUST apply the scrub to `text` and cut it to 200 characters.
 - **REQ-5.4** The command MUST add `session_id` when the environment names the session.
 - **REQ-5.5** The command MUST exit 2 with a usage line when `text` is empty or missing.
+- **REQ-5.6** When capture is disabled, the command MUST exit 1 with one line on stderr and
+  write nothing.
 
 *Proof: `tests/warden_lessons.sh` runs `add` with and without `--by agent`, with a planted
 secret, with 300 characters and with no text.*
@@ -131,7 +135,9 @@ secret, with 300 characters and with no text.*
   disk.
 - **REQ-6.3** A line MUST be at most 512 bytes. The lesson script MUST write each line with
   one write call on a file opened with O_APPEND.
-- **REQ-6.4** When the inbox is inside a git work tree, the lesson script MUST NOT write.
+- **REQ-6.4** When the inbox is inside a git work tree, the lesson script MUST NOT write. The
+  script decides this by looking for a `.git` entry in the inbox folder and its parents. It
+  does not start `git`, to stay inside the time limit of REQ-9.4.
 
 *Proof: `tests/warden_lessons.sh` checks modes, the 512-byte cap with long inputs, and an
 inbox placed inside a temporary git repository.*
@@ -144,7 +150,11 @@ detects.
 - **REQ-7.1** The scrub MUST also cover GitHub tokens (`gh[pousr]_…`), Anthropic and OpenAI
   style keys (`sk-…`), Slack tokens (`xox[abpr]-…`), `Bearer` and `Authorization:` values,
   and `password=`, `token=`, `secret=` and `api_key=` values.
-- **REQ-7.2** The scrub MUST run on every text field of every line.
+- **REQ-7.2** The scrub MUST run on every text field of every line. The rule of REQ-7.3 that
+  replaces long runs MUST skip `session_id`, `transcript_path`, `tool_use_id`, `h`, `ts`,
+  `branch` and `commit`. Every named shape MUST still apply to those fields.
+- **REQ-7.3** The scrub MUST also replace a whole private-key block, and every run of 40 or
+  more characters from `[A-Za-z0-9+/=_-]`.
 
 *Proof: `tests/warden_lessons.sh` plants each shape in failure output and in `add` text, then
 greps the whole inbox for each planted value and finds none. A second check reads the shapes
@@ -157,7 +167,8 @@ from `hooks/guard-secrets.sh` and asserts that the scrub replaces a sample of ea
 
 - **REQ-8.1** `plugins/warden/hooks/hooks.json` MUST register the hook on
   `PostToolUseFailure` with matcher `Bash`, and on `PostToolUse` with matcher
-  `Bash|Edit|Write|MultiEdit|NotebookEdit`. Both entries MUST set `async: true`.
+  `Bash|Edit|Write|MultiEdit|NotebookEdit`. Both entries MUST set `async: true`. Both MUST run
+  `python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/warden-lesson" hook`.
 - **REQ-8.2** `bin/warden-lesson` MUST run the lesson script from the plugin in the same
   repository.
 - **REQ-8.3** The existing `SessionStart` and `SubagentStart` entries MUST stay unchanged.
@@ -201,8 +212,9 @@ of 2026-10-23 (30-day retention).*
 
 - **REQ-10.1** The first eval run after this change MUST record the file list and hashes of
   the real inbox before and after the run, and show that they are equal.
-- **REQ-10.2** The same check MUST show that the eval's temporary home holds session logs
-  from the run.
+- **REQ-10.2** A real session with `WARDEN_LESSON_ROOT` set to a temporary folder MUST show
+  that the hook writes a session log. Capture inside `claude plugin eval` is a known limit:
+  two eval runs on 2026-10-23 wrote no lesson file to the eval's temporary home.
 
 *Proof: the PR body records both checks.*
 *Source: intent measure "In an eval run, the capture hook writes only inside the eval's
@@ -244,3 +256,20 @@ a privacy measure that the intent requires, not a policy skill.
   Bash calls.
 - **Still open, answered by REQ-10.** Whether `claude plugin eval` sets `HOME` to its
   temporary folder.
+
+## Reconciled 2026-10-24
+
+- REQ-7.2 and new REQ-7.3 — the build added a private-key block rule and a long-run rule to
+  close a key-body leak. The long-run rule skips the pointer fields, so the pointer survives,
+  and it skips `branch` and `commit`, so long branch names survive. Named shapes still apply
+  to every field. Ruling: the spec was wrong, and the code was wrong for `branch` and
+  `commit`. The code now exempts them, and a test covers a 45-character branch name.
+- REQ-10.2 — capture does not happen inside `claude plugin eval`. The real inbox stayed
+  unchanged across two eval runs, and the hook writes in a real session. Ruling (R1): the
+  spec was wrong. Eval capture is a known limit.
+- REQ-5.6 — new. `add` exits 1 when capture is disabled. Ruling: the spec was wrong.
+- REQ-4.4 — `list --json` also prints `fixed_by` and `edits`. Ruling: the spec was wrong.
+- REQ-2.1 and REQ-8.1 — `cmd` skips leading assignments, and the hook runs with
+  `python3 -I`. Ruling: the spec was wrong.
+- REQ-6.4 — the work-tree check looks for a `.git` entry and does not start `git`. Ruling:
+  the spec was wrong.
