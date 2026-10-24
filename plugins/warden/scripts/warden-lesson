@@ -1,0 +1,455 @@
+#!/usr/bin/env python3
+"""warden-lesson: a lesson inbox outside every repository.
+
+Modes: hook, add, list, status. This file holds the store, the secret scrub, retention and the hook.
+"""
+import datetime
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+
+sys.dont_write_bytecode = True
+
+MAX_LINE = 512
+RETENTION_DAYS = 30
+# Keys whose values are identifiers (Claude Code pointers, git branch and commit). Only the long-run rule skips them; named secret shapes still apply.
+RUN_RULE_EXEMPT_KEYS = frozenset({"session_id", "transcript_path", "tool_use_id", "h", "ts", "branch", "commit"})
+CAPS = {"cmd": 40, "sig": 120, "text": 200}
+
+# Every shape of hooks/guard-secrets.sh, then the extra shapes of REQ-7.1.
+SECRET_PATTERNS = [
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)", re.S),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+    re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
+    re.compile(r"bearer\s+[A-Za-z0-9._~+/-]{32,}", re.I),
+    re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
+    re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
+    re.compile(r"xox[abpr]-[A-Za-z0-9-]{10,}"),
+    re.compile(r"Authorization:\s*\S+(?:\s+\S+)?"),
+    re.compile(r"Bearer\s+\S+"),
+    re.compile(r"(?:password|token|secret|api_key)=\S+", re.I),
+]
+LONG_RUN = re.compile(r"[A-Za-z0-9+/=_-]{40,}")
+
+
+def inbox():
+    root = os.environ.get("WARDEN_LESSON_ROOT") or os.path.join(
+        os.path.expanduser("~"), ".claude", "lessons")
+    return os.path.abspath(root)
+
+
+def _nearest_existing(path):
+    while not os.path.exists(path):
+        parent = os.path.dirname(path)
+        if parent == path:
+            break
+        path = parent
+    return path
+
+
+_GIT_TREE_CACHE = {}
+
+
+def _inside_git_work_tree(path):
+    d = _nearest_existing(path)
+    if not os.path.isdir(d):
+        d = os.path.dirname(d)
+    if d not in _GIT_TREE_CACHE:
+        _GIT_TREE_CACHE[d] = _probe_git_work_tree(d)
+    return _GIT_TREE_CACHE[d]
+
+
+def _probe_git_work_tree(d):
+    """True when d or a parent holds a .git entry. This avoids a git process on the hook path."""
+    d = os.path.abspath(d)
+    while True:
+        if os.path.exists(os.path.join(d, ".git")):
+            return True
+        parent = os.path.dirname(d)
+        if parent == d:
+            return False
+        d = parent
+
+
+def blocked_reasons():
+    reasons = []
+    if os.environ.get("WARDEN_LESSON_OFF") == "1":
+        reasons.append("WARDEN_LESSON_OFF is 1")
+    root = inbox()
+    if _inside_git_work_tree(root):
+        reasons.append("inside a git work tree")
+    if not os.access(_nearest_existing(root), os.W_OK | os.X_OK):
+        reasons.append("not writable")
+    return reasons
+
+
+def scrub(text, long_run=True):
+    for pat in SECRET_PATTERNS:
+        text = pat.sub("<secret>", text)
+    if long_run:
+        text = LONG_RUN.sub("<secret>", text)
+    return text
+
+
+def _encode(obj):
+    return (json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def _fit(obj):
+    """Scrub and cap every string value, then shorten the longest one until the line fits."""
+    obj = {k: (scrub(v, k not in RUN_RULE_EXEMPT_KEYS) if isinstance(v, str) else v) for k, v in obj.items()}
+    for k, n in CAPS.items():
+        if isinstance(obj.get(k), str):
+            obj[k] = obj[k][:n]
+    data = _encode(obj)
+    while len(data) > MAX_LINE:
+        strs = [k for k, v in obj.items() if isinstance(v, str) and v]
+        if not strs:
+            return None
+        k = max(strs, key=lambda x: len(obj[x]))
+        over = len(data) - MAX_LINE
+        obj[k] = obj[k][:max(0, len(obj[k]) - max(1, over // 3))]
+        data = _encode(obj)
+    return data
+
+
+def _make_dirs(root, path):
+    d = os.path.dirname(path)
+    todo = []
+    while d.startswith(root) and not os.path.isdir(d):
+        todo.append(d)
+        d = os.path.dirname(d)
+    for p in reversed(todo):
+        os.mkdir(p, 0o700)
+        os.chmod(p, 0o700)
+
+
+def write_line(path, obj):
+    try:
+        root = inbox()
+        path = os.path.abspath(path)
+        if not (path == root or path.startswith(root + os.sep)):
+            return False
+        if blocked_reasons():
+            return False
+        data = _fit(obj)
+        if data is None:
+            return False
+        _make_dirs(root, path)
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        try:
+            os.write(fd, data)
+        finally:
+            os.close(fd)
+        return True
+    except Exception:
+        return False
+
+
+def retention():
+    """Delete session logs older than 30 days, at most once a day. Returns the count deleted."""
+    try:
+        if blocked_reasons():
+            return 0
+        root = inbox()
+        sessions = os.path.join(root, "sessions")
+        if not os.path.isdir(sessions):
+            return 0
+        marker = os.path.join(root, ".retention")
+        today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+        try:
+            with open(marker) as f:
+                if f.read().strip() == today:
+                    return 0
+        except OSError:
+            pass
+        cutoff = datetime.datetime.now().timestamp() - RETENTION_DAYS * 86400
+        deleted = 0
+        for name in os.listdir(sessions):
+            p = os.path.join(sessions, name)
+            if name.endswith(".jsonl") and os.path.isfile(p) and os.path.getmtime(p) < cutoff:
+                try:
+                    os.remove(p)
+                    deleted += 1
+                except OSError:
+                    pass
+        fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, (today + "\n").encode())
+        finally:
+            os.close(fd)
+        return deleted
+    except Exception:
+        return 0
+
+
+SKIP_EXIT = (0, 130, 143)
+QUIET_STARTS = ("grep", "rg", "test", "[", "diff", "cmp", "pgrep", "command -v", "which")
+SIG_WORDS = re.compile(r"error|fail|fatal|not found|denied|no such|cannot", re.I)
+PATH_RE = re.compile(r"(?:~|\.{1,2})?/[^\s:'\"]+|[A-Za-z]:\\\S+")
+SPLIT_RE = re.compile(r"&&|\|\||;|\||\n")
+ENV_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+")
+TEST_RE = re.compile(
+    r"^(?:pytest|py\.test|jest|vitest|mocha|rspec|tox"
+    r"|python3? -m (?:pytest|unittest)"
+    r"|(?:npm|pnpm|yarn|bun|cargo|go|dotnet|mix|gradle|mvn) test"
+    r"|make (?:test|check))(?:\s|$)")
+SH_TEST_RE = re.compile(r"(?:^|/)tests?/[^\s]*\.sh$")
+EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
+
+
+def last_simple(command):
+    parts = [p.strip() for p in SPLIT_RE.split(command or "") if p.strip()]
+    if not parts:
+        return ""
+    return ENV_RE.sub("", parts[-1])
+
+
+def is_test_like(command):
+    last = last_simple(command)
+    if TEST_RE.match(last):
+        return True
+    return any(SH_TEST_RE.search(w) for w in last.split())
+
+
+def cmd_name(command):
+    words = last_simple(command).split()
+    if not words:
+        return ""
+    name = os.path.basename(words[0]) or words[0]
+    if len(words) > 1 and re.fullmatch(r"[a-z][a-z-]*", words[1]):
+        name += " " + words[1]
+    return name[:CAPS["cmd"]]
+
+
+def signature(error):
+    lines = (error or "").split("\n")[1:]
+    lines = [ln.strip() for ln in lines if ln.strip()]
+    if not lines:
+        return ""
+    line = next((ln for ln in lines if SIG_WORDS.search(ln)), lines[-1])
+    return scrub(PATH_RE.sub("<path>", line))[:CAPS["sig"]]
+
+
+def _git_info(cwd):
+    """Run the three rev-parse calls in parallel. Each has a 2-second timeout and gives "" on error."""
+    argsets = [("--show-toplevel",), ("--abbrev-ref", "HEAD"), ("--short", "HEAD")]
+    procs = []
+    for a in argsets:
+        try:
+            procs.append(subprocess.Popen(["git", "-C", cwd, "rev-parse", *a],
+                                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True))
+        except Exception:
+            procs.append(None)
+    out = []
+    for pr in procs:
+        try:
+            o, _ = pr.communicate(timeout=2)
+            out.append(o.strip() if pr.returncode == 0 else "")
+        except Exception:
+            try:
+                pr.kill()
+            except Exception:
+                pass
+            out.append("")
+    return out
+
+
+def _now():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _skip_exit1(command):
+    last = last_simple(command)
+    if last.startswith("git diff") and "--quiet" in last.split():
+        return True
+    return any(last == w or last.startswith(w + " ") for w in QUIET_STARTS)
+
+
+def _hook(args):
+    try:
+        if os.environ.get("WARDEN_LESSON_OFF") == "1":
+            return 0
+        p = json.loads(sys.stdin.read())
+        if not isinstance(p, dict):
+            return 0
+        tool = p.get("tool_name")
+        event = p.get("hook_event_name")
+        sid = re.sub(r"[^A-Za-z0-9_-]", "", str(p.get("session_id") or "")) or "unknown"
+        path = os.path.join(inbox(), "sessions", sid + ".jsonl")
+        cwd = p.get("cwd") or ""
+        command = (p.get("tool_input") or {}).get("command") or ""
+        if event == "PostToolUseFailure":
+            if tool != "Bash" or p.get("is_interrupt"):
+                return 0
+            error = p.get("error") or ""
+            m = re.match(r"Exit code (\d+)", error)
+            if not m:
+                return 0
+            code = int(m.group(1))
+            if code in SKIP_EXIT or (code == 1 and _skip_exit1(command)):
+                return 0
+            top, branch, commit = _git_info(cwd)
+            obj = {
+                "t": "fail", "ts": _now(), "src": "hook", "cmd": cmd_name(command),
+                "exit": code, "sig": signature(error), "session_id": p.get("session_id") or "",
+                "transcript_path": p.get("transcript_path") or "",
+                "tool_use_id": p.get("tool_use_id") or "",
+                "repo": os.path.basename(top) if top else "",
+                "branch": branch, "commit": commit,
+            }
+            if is_test_like(command):
+                obj["h"] = hashlib.sha256((command + "\0" + cwd).encode()).hexdigest()[:16]
+            write_line(path, obj)
+        elif event == "PostToolUse":
+            if tool == "Bash" and is_test_like(command):
+                h = hashlib.sha256((command + "\0" + cwd).encode()).hexdigest()[:16]
+                write_line(path, {"t": "pass", "ts": _now(),
+                                  "tool_use_id": p.get("tool_use_id") or "", "h": h})
+            elif tool in EDIT_TOOLS:
+                write_line(path, {"t": "edit", "ts": _now()})
+        retention()
+    except BaseException:
+        pass
+    return 0
+
+
+def _add(args):
+    text = " ".join(args.text).strip()
+    if not text:
+        print('usage: warden-lesson add "<text>" [--by agent]', file=sys.stderr)
+        return 2
+    top, branch, commit = _git_info(os.getcwd())
+    obj = {"t": "lesson", "ts": _now(), "src": "agent" if args.by == "agent" else "user",
+           "text": text, "repo": os.path.basename(top) if top else "",
+           "branch": branch, "commit": commit}
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if sid:
+        obj["session_id"] = sid
+    if not write_line(os.path.join(inbox(), "manual.jsonl"), obj):
+        print("warden-lesson: capture is disabled; run warden-lesson status", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _read_lines(path):
+    out = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for ln in f:
+                try:
+                    d = json.loads(ln)
+                except ValueError:
+                    continue
+                if isinstance(d, dict):
+                    out.append(d)
+    except OSError:
+        pass
+    return out
+
+
+def _log_files():
+    root = inbox()
+    files = []
+    sessions = os.path.join(root, "sessions")
+    try:
+        files = [os.path.join(sessions, n) for n in sorted(os.listdir(sessions)) if n.endswith(".jsonl")]
+    except OSError:
+        pass
+    return files, os.path.join(root, "manual.jsonl")
+
+
+def _session_records(lines):
+    groups = {}
+    for i, d in enumerate(lines):
+        if d.get("t") != "fail":
+            continue
+        key = (d.get("cmd"), d.get("exit"), re.sub(r"\d+", "N", str(d.get("sig") or "")))
+        g = groups.get(key)
+        if g is None:
+            g = groups[key] = {"first": d, "count": 0, "last_i": i, "h": d.get("h")}
+        g["count"] += 1
+        g["last_i"] = i
+        g["h"] = g["h"] or d.get("h")
+    recs = []
+    for g in groups.values():
+        d = g["first"]
+        rec = {"t": "fail", "ts": lines[g["last_i"]].get("ts") or d.get("ts") or "", "src": d.get("src") or "hook",
+               "repo": d.get("repo") or "", "branch": d.get("branch") or "", "commit": d.get("commit") or "",
+               "cmd": d.get("cmd") or "", "exit": d.get("exit"), "sig": d.get("sig") or "",
+               "count": g["count"], "fixed": False}
+        if g["h"]:
+            for j in range(g["last_i"] + 1, len(lines)):
+                if lines[j].get("t") == "pass" and lines[j].get("h") == g["h"]:
+                    rec["fixed"] = True
+                    rec["fixed_by"] = lines[j].get("tool_use_id") or ""
+                    rec["edits"] = sum(1 for x in lines[g["last_i"] + 1:j] if x.get("t") == "edit")
+                    break
+        recs.append(rec)
+    return recs
+
+
+def _all_records():
+    files, manual = _log_files()
+    recs = []
+    for f in files:
+        recs.extend(_session_records(_read_lines(f)))
+    for d in _read_lines(manual):
+        if d.get("t") == "lesson":
+            recs.append({"t": "lesson", "ts": d.get("ts") or "", "src": d.get("src") or "user",
+                         "repo": d.get("repo") or "", "branch": d.get("branch") or "",
+                         "commit": d.get("commit") or "", "text": d.get("text") or "", "count": 1,
+                         "session_id": d.get("session_id") or ""})
+    recs.sort(key=lambda r: r["ts"], reverse=True)
+    return recs
+
+
+def _list(args):
+    recs = _all_records()
+    for r in recs:
+        if args.json:
+            print(json.dumps(r, ensure_ascii=False))
+            continue
+        what = r["text"] if r["t"] == "lesson" else r["sig"]
+        fixed = "-"
+        if r.get("fixed"):
+            fixed = "fixed(%s, %d edits)" % (r.get("fixed_by", ""), r.get("edits", 0))
+        print("  ".join([r["ts"][:10], r["src"], r["repo"] or "-", r.get("cmd") or "-",
+                         what or "-", "x%d" % r["count"], fixed]))
+    return 0
+
+
+def _status(args):
+    reasons = blocked_reasons()
+    recs = _all_records()
+    count = len(recs)
+    last = max((r["ts"] for r in recs), default="")
+    print("inbox: " + inbox())
+    print("capture: enabled" if not reasons else "capture: disabled (%s)" % ", ".join(reasons))
+    print("records: %d" % count)
+    print("last write: " + (last or "never"))
+    return 0
+
+
+def main(argv=None):
+    import argparse  # Lazy: the hook path does not need it.
+    parser = argparse.ArgumentParser(prog="warden-lesson")
+    sub = parser.add_subparsers(dest="mode", required=True)
+    pa = sub.add_parser("add")
+    pa.add_argument("text", nargs="*")
+    pa.add_argument("--by", default="user")
+    pa.set_defaults(func=_add)
+    pl = sub.add_parser("list")
+    pl.add_argument("--json", action="store_true")
+    pl.set_defaults(func=_list)
+    sub.add_parser("status").set_defaults(func=_status)
+    sub.add_parser("hook").set_defaults(func=_hook)
+    args, _ = parser.parse_known_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

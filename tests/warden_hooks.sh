@@ -148,6 +148,26 @@ else
   fail "hooks.json has $n hook entries with onFailure (must be 0)"
 fi
 
+# REQ-8: the lesson hook entries.
+LCMD='python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/warden-lesson" hook'
+for spec in "PostToolUseFailure|Bash" "PostToolUse|Bash|Edit|Write|MultiEdit|NotebookEdit"; do
+  ev="${spec%%|*}"; mt="${spec#*|}"
+  got=$(jq -c --arg ev "$ev" '.hooks[$ev] // [] | map({matcher, hooks})' "$H" 2>/dev/null)
+  want=$(jq -cn --arg mt "$mt" --arg c "$LCMD" '[{matcher:$mt,hooks:[{type:"command",command:$c,shell:"bash",async:true}]}]')
+  if [ "$got" = "$want" ]; then
+    pass "$ev has one async entry for matcher '$mt' running the lesson hook"
+  else
+    fail "$ev entry differs (want: $want; got: $got)"
+  fi
+done
+
+# SessionStart and SubagentStart are unchanged (literal copy of the pre-REQ-8 JSON).
+OLD_START='{"matcher":"startup|clear|compact","hooks":[{"type":"command","command":"\"${CLAUDE_PLUGIN_ROOT}/hooks/code-map\" SessionStart","shell":"bash","async":false}]}'
+OLD_SUB='{"hooks":[{"type":"command","command":"\"${CLAUDE_PLUGIN_ROOT}/hooks/code-map\" SubagentStart","shell":"bash","async":false}]}'
+[ "$(jq -c '.hooks.SessionStart' "$H" 2>/dev/null)" = "[$OLD_START]" ] && pass "SessionStart entry unchanged" || fail "SessionStart entry changed"
+[ "$(jq -c '.hooks.SubagentStart' "$H" 2>/dev/null)" = "[$OLD_SUB]" ] && pass "SubagentStart entry unchanged" || fail "SubagentStart entry changed"
+[ "$(jq -c '.hooks | keys' "$H" 2>/dev/null)" = '["PostToolUse","PostToolUseFailure","SessionStart","SubagentStart"]' ] && pass "hooks.json registers exactly four events" || fail "hooks.json event set is wrong"
+
 # Trigger sentence: PR #2's text, restricted to the four skills.
 SC="$W/hooks/setup-check.md"
 # PR #2's sentence, from commit 5a972be (plugins/superpowers/skills/using-superpowers/SKILL.md).
