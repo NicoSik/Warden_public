@@ -22,10 +22,15 @@ is still one subsystem.
 - **A session log** is `<inbox>/sessions/<session_id>.jsonl`.
 - **The manual log** is `<inbox>/manual.jsonl`.
 - **A line** is one JSON object on one line of a session log or the manual log.
-- **The last simple command** is the text after the last `&&`, `||`, `;` or `|` of the
-  command, without its leading spaces.
-- **A test-like command** is a command whose last simple command matches the list in
-  REQ-3.1.
+- **A simple command** is one part of a command after `shlex` splits it at `&&`, `||`, `;`,
+  `|`, `&` and newlines. Heredoc bodies, redirections and leading `NAME=value` assignments
+  are not part of a simple command.
+- **The last simple command** is the last simple command of the command.
+- **A test simple command** is the last simple command that matches the list in REQ-3.1,
+  anywhere in the command.
+- **A test-like command** is a command that holds a test simple command.
+- **A file viewer** is a command whose output is file or repository content, such as `cat`,
+  `ls`, `sed`, `grep`, `echo` or `git log`.
 - **The scrub** replaces every match of the secret patterns in REQ-7 with `<secret>`.
 
 ## Requirements
@@ -50,20 +55,29 @@ probe and asserts which payloads write a line.*
 
 **REQ-2** A `fail` line MUST hold only the fields below.
 
-- **REQ-2.1** `cmd`: the basename of the first word of the last simple command. A second
-  word follows when it matches `[a-z][a-z-]*`. The hook MUST skip leading `NAME=value`
-  assignments first. The hook MUST cut the field to 40 characters.
+- **REQ-2.1** `cmd`: the basename of the first word of the test simple command, or of the
+  last simple command when the command is not test-like. A second word follows when it
+  matches `[a-z][a-z-]*`. The hook MUST cut the field to 40 characters. When `shlex` cannot
+  parse the command, `cmd` MUST be `unparsed`.
 - **REQ-2.2** `exit`: the exit code.
-- **REQ-2.3** `sig`: the first output line after `Exit code N` that matches `error`,
-  `fail`, `fatal`, `not found`, `denied`, `no such` or `cannot`, case-insensitive. When no
-  line matches, `sig` MUST be the last non-empty output line. The hook MUST replace each
-  path with `<path>`, apply the scrub, and cut the result to 120 characters.
+- **REQ-2.3** `sig`: the first output line after `Exit code N` that starts like an error:
+  `(eval):`, `<name>:` for a shell or a command of the chain, `<Name>Error:`, `error:`,
+  `fatal:`, `E` and three spaces, `FAILED`, the last line of a traceback, or, for a test-like
+  command, a `<N> failed` summary. When no line matches, `sig` MUST be the last non-empty
+  output line. The hook MUST replace each path with `<path>`, apply the scrub, and cut the
+  result to 120 characters.
+- **REQ-2.3a** File content MUST NOT become `sig`. When every simple command is a file viewer
+  or the command does not parse, only `(eval):` and `<name>:` lines qualify. The last-line
+  fallback MUST NOT apply when a file viewer or an inline script (`-`, `-c`, `-e`) produced
+  the end of the output; `sig` is then empty.
 - **REQ-2.4** The pointer: `session_id`, `transcript_path` and `tool_use_id` from the payload.
 - **REQ-2.5** `repo`, `branch` and `commit`: the basename of the git top-level folder of
   `cwd`, its branch and its short commit. Each is empty when `cwd` is not in a git work tree.
 - **REQ-2.6** `ts` (UTC, ISO 8601), `t` = `fail`, and `src` = `hook`.
 - **REQ-2.7** `h`: for a test-like command only, the first 16 hex characters of the
-  SHA-256 of the full command, a zero byte and `cwd`.
+  SHA-256 of the test simple command, a zero byte and the folder it runs in. That folder is
+  `cwd` after any `cd` that comes before the test. Runners such as `uv run` and `timeout 60`
+  are not part of the test simple command.
 - **REQ-2.8** The line MUST NOT hold the full command text or any output line other than
   `sig`.
 
@@ -74,14 +88,18 @@ payload asserts that the header line does not become `sig`.*
 
 **REQ-3** The hook MUST record what fix linking needs, and nothing more.
 
-- **REQ-3.1** A command is test-like when its last simple command starts with `pytest`,
+- **REQ-3.1** A simple command is a test when, after any runner, it starts with `pytest`,
   `py.test`, `jest`, `vitest`, `mocha`, `rspec`, `tox`, `python -m pytest`,
   `python -m unittest`, `python3 -m pytest`, `python3 -m unittest`, or with one of `npm`,
   `pnpm`, `yarn`, `bun`, `cargo`, `go`, `dotnet`, `mix`, `gradle`, `mvn` followed by `test`,
-  or with `make test` or `make check`. A command is also test-like when it runs a `*.sh` file
-  whose path holds a `tests/` or `test/` folder.
-- **REQ-3.2** On `PostToolUse` for a test-like Bash command, the hook MUST write a `pass`
-  line with `t`, `ts`, `tool_use_id` and `h` only.
+  or with `make test` or `make check`. A simple command is also a test when it runs a `*.sh`
+  file whose path holds a `tests/` or `test/` folder. A `*.sh` path that is only an argument
+  of another command MUST NOT count.
+- **REQ-3.2** On `PostToolUse` for a test-like Bash command whose test passed, the hook MUST
+  write a `pass` line with `t`, `ts`, `tool_use_id` and `h` only. The exit status proves a
+  pass when only `&&` follows the test, or `|` under `pipefail`. Otherwise the output MUST
+  hold `<N> passed` and no failure summary. When neither holds, the hook MUST NOT write a
+  `pass` line.
 - **REQ-3.3** On `PostToolUse` for Edit, Write, MultiEdit or NotebookEdit, the hook MUST
   write an `edit` line with `t` and `ts` only.
 - **REQ-3.4** The hook MUST NOT write a `pass` line for a command that is not test-like.
