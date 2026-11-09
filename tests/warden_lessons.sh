@@ -232,14 +232,14 @@ COMMIT="$(git -C "$REPO" rev-parse --short HEAD)"
 # payload EVENT TOOL COMMAND ERROR [INTERRUPT]: print a synthetic payload as JSON.
 payload() {
   python3 -I -c '
-import json, sys
+import json, os, sys
 ev, tool, cmd, err, intr, cwd = sys.argv[1:7]
 p = {"hook_event_name": ev, "tool_name": tool, "session_id": "'"$SID"'", "transcript_path": "'"$TP"'",
      "tool_use_id": "toolu_01ABC", "cwd": cwd, "tool_input": {"command": cmd}, "is_interrupt": intr == "1"}
 if ev == "PostToolUseFailure":
     p["error"] = err
 else:
-    p["tool_response"] = {"stdout": "", "stderr": "", "interrupted": False}
+    p["tool_response"] = {"stdout": os.environ.get("PAYLOAD_STDOUT", ""), "stderr": "", "interrupted": False}
 print(json.dumps(p))' "$1" "$2" "$3" "$4" "${5:-0}" "${HOOK_CWD:-$REPO}"
 }
 sess() { echo "$ROOT/sessions/$SID.jsonl"; }
@@ -522,5 +522,126 @@ for _ in range(20):
 print("%.1f" % statistics.median(ts))' "$PCMD" "$FP" "$PLUGIN_DIR")"
 echo "  median production hook time: ${MEDP} ms"
 if python3 -I -c 'import sys; sys.exit(0 if float(sys.argv[1]) < 50 else 1)' "$MEDP"; then pass "median of 20 production hook runs is under 50 ms ($MEDP ms)"; else fail "production median $MEDP ms"; fi
+
+# ---- Capture quality (REQ-2.1, REQ-2.3, REQ-2.7, REQ-3.1, REQ-3.2). Every fixture is synthetic. ----
+# Q1. Lines that start like an error win over the keyword-anywhere text around them.
+if py '
+CASES = [
+    ("ls *.ts", "(eval):1: no matches found: *.ts", "(eval):1: no matches found: *.ts"),
+    ("ls nope", "ls: nope: No such file or directory", "ls: nope: No such file or directory"),
+    ("make x", "a plan line about a failing job\nmake: *** [x] Error 2", "make: *** [x] Error 2"),
+    ("git push", "the failed step\nfatal: not a git repository", "fatal: not a git repository"),
+    ("node a.js", "this cannot be the line\nError: boom", "Error: boom"),
+    ("cargo build", "not this denied line\nerror[E0382]: use of moved value", "error[E0382]: use of moved value"),
+    ("pytest -q", "tests/a.py F\nFAILED tests/a.py::t - boom", "FAILED tests<path>::t - boom"),
+    ("pytest -q", "E   assert 1 == 2\nFAILED tests/a.py::t", "E   assert 1 == 2"),
+    ("python3 a.py", "Traceback (most recent call last):\n  File \"a.py\", line 1, in <module>\n    fail_now()\nValueError: bad value", "ValueError: bad value"),
+    ("python3 a.py", "Traceback (most recent call last):\n  File \"a.py\", line 1, in <module>\npkg.Stop: halted", "pkg.Stop: halted"),
+    ("make build", "Step 3 fixes the failing import\nThe docstring says it cannot fail\nbuild stopped", "build stopped"),
+    ("pytest -q; echo done", "1 failed, 45 passed in 0.21s\ndone", "1 failed, 45 passed in 0.21s"),
+    ("pytest -q | tail -3", "45 tests ran\nlast line", "last line"),
+]
+for cmd, out, want in CASES:
+    got = wl.signature("Exit code 1\n" + out, cmd)
+    assert got == want, (cmd, got, want)
+'; then pass "signature prefers lines that start like an error, then the last line"; else fail "signature selection wrong"; fi
+
+# Q2. File content never becomes a signature, even when the line holds an error word.
+AD="We need a developer who cannot stop learning and never failed a client"
+LSL="-rw-r--r--  1 exampleuser  staff  120 Oct  1 12:00 notes.md"
+DOC='"""Raise an error when the file is not found."""'
+PLAN="Error: this plan line only looks like an error"
+if py '
+ad, lsl, doc, plan = sys.argv[1:5]
+CMDS = ["cat job.txt", "head -40 job.txt", "tail -5 job.txt", "sed -n 1,40p a.py", "ls -l", "cd x && ls -l",
+        "cat job.txt | grep developer", "git log -3", "git show HEAD", "echo done", "awk 1 job.txt", "rg x job.txt",
+        "pytest -q; cat job.txt | tail -3" ]
+for cmd in CMDS[:-1]:
+    for line in (ad, lsl, doc, plan, "E   looks like pytest", "FAILED the interview round", "1 failed, 2 passed"):
+        got = wl.signature("Exit code 1\n" + line + "\nplain tail line", cmd)
+        assert got == "", (cmd, line, got)
+got = wl.signature("Exit code 1\n" + ad, "pytest -q; cat job.txt | tail -3")
+assert got == "", got
+for inline in ("python3 - <<\x27EOF\x27\nprint(open(\x27a\x27).read())\nEOF", "python3 -c \"print(1)\"", "node -e \"x\""):
+    got = wl.signature("Exit code 1\n" + ad, inline)
+    assert got == "", (inline, got)
+got = wl.signature("Exit code 1\nTraceback (most recent call last):\n  File \"a\", line 1\nKeyError: \x27k\x27", "python3 - <<EOF\nx\nEOF")
+assert got == "KeyError: \x27k\x27", got
+got = wl.signature("Exit code 1\n" + ad + "\ncat: missing.txt: No such file or directory", "cat job.txt missing.txt")
+assert got == "cat: missing.txt: No such file or directory", got
+got = wl.signature("Exit code 128\n" + ad + "\nfatal: bad revision", "git log nope")
+assert got == "fatal: bad revision", got
+' "$AD" "$LSL" "$DOC" "$PLAN"; then pass "file-content lines never become signatures"; else fail "file content became a signature"; fi
+fresh_root
+run_hook "$(fail_payload 'cat job.txt' $'Exit code 1\nCONTENTMARKER senior role, cannot be remote\nCONTENTMARKER failed applicants may reapply')"
+if [ "$(nlines)" = 1 ] && [ -z "$(jl sig)" ] && ! grep -rq CONTENTMARKER "$ROOT"; then pass "hook writes no file content to the inbox"; else fail "file content reached the inbox: $(cat "$(sess)" 2>/dev/null)"; fi
+
+# Q3. cmd survives heredocs and quoted scripts; a command that does not parse is marked.
+if py '
+CASES = [
+    ("cd x && python3 - <<\x27EOF\x27\np = \"a\"\nprint(\"unbalanced \x27 quote\")\nlive_ping\"\nEOF", "python3"),
+    ("cat > a.txt <<EOF\ndon\x27t split\nEOF\nmake build", "make build"),
+    ("python3 -c \"import x\nlive_ping\"", "python3"),
+    ("node -e \"console.log(typeof x); y\"", "node"),
+    ("bash -c \"a; b | c\"", "bash"),
+    ("A=\x27b c\x27 make build", "make build"),
+    ("pytest -q; echo done", "pytest"),
+    ("uv run --locked pytest -q | tail -3", "pytest"),
+    ("echo \"unterminated", "unparsed"),
+    ("", ""),
+]
+for cmd, want in CASES:
+    got = wl.cmd_name(cmd)
+    assert got == want, (cmd, got, want)
+assert not wl.is_test_like("echo \"pytest")
+got = wl.signature("Exit code 1\nsome file line\nzsh:1: parse error near x", "echo \"unterminated")
+assert got == "zsh:1: parse error near x", got
+assert wl.signature("Exit code 1\nsome file line", "echo \"unterminated") == ""
+'; then pass "cmd parses heredocs and quoted scripts and marks parse failures"; else fail "cmd parsing wrong"; fi
+
+# Q4. A test inside a chain is test-like; a mention of a test is not.
+if py '
+for c in ["pytest -q 2>&1 | tail -5", "cd x && npm test -- --maxWorkers=4 2>&1 | grep y", "pytest -q; echo done",
+          "uv run --locked pytest -q tests/a.py | head", ".venv/bin/python -m pytest", "python3.12 -m pytest",
+          "npx vitest run x", "timeout 60 pytest", "FOO=\x27a b\x27 pytest", "npm run test", "npm run test:unit",
+          "make check >/dev/null 2>&1; echo $?", "python3 - <<\x27EOF\x27\nprint(1)\nEOF\npytest -q", "bash -x tests/a.sh | tail"]:
+    assert wl.is_test_like(c), c
+for c in ["sed -n 1,5p tests/a.sh", "cat tests/a.sh", "git add tests/a.sh", "grep pytest a.txt", "echo \x27pytest | tail\x27",
+          "python3 -c \"import pytest\"", "cat > a <<EOF\npytest -q\nEOF", "npm install"]:
+    assert not wl.is_test_like(c), c
+'; then pass "test-like finds a test anywhere in a chain and ignores mentions"; else fail "chain test-like wrong"; fi
+
+# Q5. Fix links survive output decoration; a hidden failure never counts as a pass.
+linked() { WL list --json | jq1 'assert rs[0]["fixed"] is '"$1"', rs'; }
+plines() { cat "$(sess)" 2>/dev/null | grep -c '"t":"pass"'; }
+fresh_root
+run_hook "$(fail_payload 'pytest -q 2>&1 | tail -5; echo done' $'Exit code 1\nFAILED tests/a.py::t')"
+run_hook "$(payload PostToolUse Edit x '')"
+run_hook "$(PAYLOAD_STDOUT=$'46 passed in 0.21s' payload PostToolUse Bash 'pytest -q 2>&1 | tail -3' '')"
+if linked True && WL list --json | jq1 'assert rs[0]["edits"]==1 and rs[0]["cmd"]=="pytest", rs'; then pass "piped rerun with a pass summary links the fix"; else fail "decorated rerun did not link: $(cat "$(sess)")"; fi
+fresh_root
+run_hook "$(fail_payload 'pytest -q; echo done' $'Exit code 1\nFAILED tests/a.py::t')"
+run_hook "$(PAYLOAD_STDOUT=$'1 failed, 45 passed in 0.21s' payload PostToolUse Bash 'pytest -q | tail -3' '')"
+[ "$(plines)" = 0 ] && linked False && pass "piped run with a failure summary writes no pass" || fail "hidden failure wrote a pass: $(cat "$(sess)")"
+fresh_root
+run_hook "$(payload PostToolUse Bash 'pytest -q 2>&1 | grep FAILED' '')"
+run_hook "$(PAYLOAD_STDOUT=$'all good' payload PostToolUse Bash 'pytest -q; echo done' '')"
+[ "$(plines)" = 0 ] && pass "hidden exit with no pass summary writes no pass" || fail "unknown result wrote a pass"
+fresh_root
+run_hook "$(payload PostToolUse Bash 'pytest -q && echo ok' '')"
+run_hook "$(payload PostToolUse Bash 'set -o pipefail; pytest -q | tail -3' '')"
+run_hook "$(payload PostToolUse Bash 'cd sub && pytest -q' '')"
+[ "$(plines)" = 3 ] && pass "visible exit status writes a pass without a summary" || fail "visible exit: $(cat "$(sess)" 2>/dev/null)"
+if py '
+ha = wl.test_hash("cd a && pytest -q", "/r")
+assert ha != wl.test_hash("cd b && pytest -q", "/r")
+assert ha == wl.test_hash("pytest -q 2>&1 | tail -3", "/r/a")
+assert wl.test_hash("ls", "/r") is None
+assert wl.test_hash("pytest -q", "/r") != wl.test_hash("pytest -q tests/a.py", "/r")
+'; then pass "hash uses the test and its folder, not the decoration"; else fail "test hash wrong"; fi
+fresh_root
+run_hook "$(fail_payload 'pytest -q' $'Exit code 1\nFAILED tests/a.py::t')"
+run_hook "$(payload PostToolUse Bash 'pytest -q tests/a.py' '')"
+linked False && pass "a narrower rerun stays unlinked (known limit)" || fail "narrower rerun linked"
 
 harness_exit

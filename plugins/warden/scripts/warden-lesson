@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 
@@ -188,49 +189,243 @@ def retention():
 
 SKIP_EXIT = (0, 130, 143)
 QUIET_STARTS = ("grep", "rg", "test", "[", "diff", "cmp", "pgrep", "command -v", "which")
-SIG_WORDS = re.compile(r"error|fail|fatal|not found|denied|no such|cannot", re.I)
 PATH_RE = re.compile(r"(?:~|\.{1,2})?/[^\s:'\"]+|[A-Za-z]:\\\S+")
-SPLIT_RE = re.compile(r"&&|\|\||;|\||\n")
-ENV_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+")
+ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 TEST_RE = re.compile(
     r"^(?:pytest|py\.test|jest|vitest|mocha|rspec|tox"
-    r"|python3? -m (?:pytest|unittest)"
-    r"|(?:npm|pnpm|yarn|bun|cargo|go|dotnet|mix|gradle|mvn) test"
+    r"|python[0-9.]* -m (?:pytest|unittest)"
+    r"|(?:npm|pnpm|yarn|bun|cargo|go|dotnet|mix|gradle|mvn)(?: run)? test(?::\S*)?"
     r"|make (?:test|check))(?:\s|$)")
 SH_TEST_RE = re.compile(r"(?:^|/)tests?/[^\s]*\.sh$")
 EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 
+HEREDOC_RE = re.compile(r"(?<!<)<<(?!<)-?\s*(?:'([^']+)'|\"([^\"]+)\"|\\?([\w.-]+))")
+PUNCTUATION = "();<>|&\n"
+OPERATORS = ("&&", "||", "|", ";", "&")
+OPENERS = ("do", "then", "else", "elif", "if", "while", "until", "!", "{")
+CLOSERS = ("done", "fi", "esac", "}")
+RUN_WRAPPERS = ("uv", "poetry", "pipenv", "pnpm", "hatch", "pdm", "rye")
+PREFIX_WRAPPERS = ("npx", "bunx", "timeout", "time", "env", "nice", "command")
+SHELLS = ("bash", "sh", "zsh")
+# Commands whose output is file or repository content, and commands that print nothing of their own.
+PASSIVE = frozenset({"cat", "head", "tail", "less", "more", "sed", "awk", "grep", "egrep", "fgrep", "rg", "ls", "find",
+                     "tree", "wc", "sort", "uniq", "cut", "tr", "jq", "yq", "echo", "printf", "nl", "tee", "stat",
+                     "file", "du", "df", "xxd", "od", "strings", "diff", "cd", "pwd", "export", "set", "true",
+                     "false", "sleep"})
+PASSIVE_GIT = ("log", "show", "diff", "status", "blame", "grep", "ls-files", "check-ignore")
+
+ERROR_START = re.compile(r"(?:[\w.]*(?:Error|Exception)|error|ERROR|fatal|FATAL)(?:\[[^\]]*\])?:|E {3}|FAILED\b")
+FAILED_SUMMARY = re.compile(r"\W*(?:Tests?:?\s+)?[1-9]\d* failed\b")
+PASS_SUMMARY = re.compile(r"\b[1-9]\d* passed\b")
+HIDDEN_FAILURE = re.compile(r"\b[1-9]\d* (?:failed|errors?)\b|^\s*FAILED\b|^\s*E {3}", re.M)
+
+
+def _drop_heredocs(command):
+    """Remove heredoc bodies. Their text is data, and it often holds unbalanced quotes."""
+    lines = command.split("\n")
+    out = []
+    i = 0
+    while i < len(lines):
+        out.append(lines[i])
+        delims = [a or b or c for a, b, c in HEREDOC_RE.findall(lines[i])]
+        i += 1
+        for delim in delims:
+            end = next((j for j in range(i, len(lines)) if lines[j].strip() == delim), None)
+            if end is not None:
+                i = end + 1
+    return "\n".join(out)
+
+
+def _add_simple(chain, words, op):
+    while words and (ASSIGN_RE.match(words[0]) or words[0] in OPENERS):
+        words = words[1:]
+    if words and words[0] not in CLOSERS:
+        chain.append((words, op))
+
+
+def parse_chain(command):
+    """Split a command into a list of (words, operator after). Returns None when shlex cannot parse it."""
+    text = _drop_heredocs(command or "").replace("\\\n", " ")
+    text = "\n".join(ln for ln in text.split("\n") if not ln.lstrip().startswith("#"))
+    try:
+        lex = shlex.shlex(text, posix=True, punctuation_chars=PUNCTUATION)
+        lex.whitespace = " \t\r"
+        lex.whitespace_split = True
+        lex.commenters = ""
+        tokens = list(lex)
+    except ValueError:
+        return None
+    chain, words, skip_target = [], [], False
+    for raw in tokens:
+        if not raw or set(raw) - set(PUNCTUATION):
+            if skip_target:
+                skip_target = False
+            else:
+                words.append(raw)
+            continue
+        tok = raw.replace("\n", "").replace("(", "").replace(")", "").replace("|&", "|").replace(";;", ";")
+        if tok and tok not in OPERATORS and set(tok) & set("<>"):
+            if words and words[-1].isdigit():
+                words.pop()
+            skip_target = True
+            continue
+        skip_target = False
+        _add_simple(chain, words, tok if tok in OPERATORS else ";")
+        words = []
+    _add_simple(chain, words, "")
+    return chain
+
+
+def _base(word):
+    return os.path.basename(word) or word
+
+
+def _unwrap(words):
+    """Drop runners such as `uv run` and `timeout 60` in front of the real command."""
+    while len(words) > 1:
+        first = _base(words[0])
+        if first in RUN_WRAPPERS and words[1] in ("run", "exec"):
+            words = words[2:]
+        elif first in PREFIX_WRAPPERS:
+            words = words[1:]
+        else:
+            break
+        while len(words) > 1 and (not words[0] or words[0][0] == "-" or words[0][0].isdigit()
+                                  or ASSIGN_RE.match(words[0])):
+            words = words[1:]
+    return [_base(words[0])] + words[1:] if words else words
+
+
+def _runs_tests(words):
+    real = _unwrap(words)
+    if not real:
+        return False
+    if TEST_RE.match(" ".join(real)) or SH_TEST_RE.search(words[0]):
+        return True
+    if real[0] in SHELLS:
+        script = next((w for w in real[1:] if not w.startswith("-")), "")
+        return bool(SH_TEST_RE.search(script)) and "-c" not in real[1:]
+    return False
+
+
+def _test_index(chain):
+    """Return the index of the last simple command that runs tests, or None."""
+    for i in range(len(chain or []) - 1, -1, -1):
+        if _runs_tests(chain[i][0]):
+            return i
+    return None
+
 
 def last_simple(command):
-    parts = [p.strip() for p in SPLIT_RE.split(command or "") if p.strip()]
-    if not parts:
-        return ""
-    return ENV_RE.sub("", parts[-1])
+    chain = parse_chain(command)
+    return " ".join(chain[-1][0]) if chain else ""
 
 
 def is_test_like(command):
-    last = last_simple(command)
-    if TEST_RE.match(last):
+    return _test_index(parse_chain(command)) is not None
+
+
+def test_hash(command, cwd):
+    """Hash the test words and the folder they run in. Returns None for a command that runs no test."""
+    chain = parse_chain(command)
+    i = _test_index(chain)
+    if i is None:
+        return None
+    for words, _ in chain[:i]:
+        if words[0] == "cd" and len(words) > 1:
+            cwd = os.path.normpath(os.path.join(cwd, os.path.expanduser(words[1])))
+    return hashlib.sha256((" ".join(_unwrap(chain[i][0])) + "\0" + cwd).encode()).hexdigest()[:16]
+
+
+def test_passed(command, tool_response):
+    """True when a successful Bash call proves that its test passed.
+
+    The exit status belongs to the last command of a chain. A test that a pipe or `;` follows can fail while
+    the call exits 0. In that case only a pass summary with no failure summary counts.
+    """
+    chain = parse_chain(command)
+    i = _test_index(chain)
+    if i is None:
+        return False
+    pipefail = any(w[0] == "set" and "pipefail" in w for w, _ in chain)
+    if all(op == "&&" or (pipefail and op == "|") for _, op in chain[i:-1]):
         return True
-    return any(SH_TEST_RE.search(w) for w in last.split())
+    resp = tool_response if isinstance(tool_response, dict) else {}
+    out = "%s\n%s" % (resp.get("stdout") or "", resp.get("stderr") or "")
+    return bool(PASS_SUMMARY.search(out)) and not HIDDEN_FAILURE.search(out)
 
 
 def cmd_name(command):
-    words = last_simple(command).split()
-    if not words:
+    chain = parse_chain(command)
+    if chain is None:
+        return "unparsed"
+    if not chain:
         return ""
-    name = os.path.basename(words[0]) or words[0]
+    i = _test_index(chain)
+    words = _unwrap(chain[i][0]) if i is not None else chain[-1][0]
+    name = _base(words[0])
     if len(words) > 1 and re.fullmatch(r"[a-z][a-z-]*", words[1]):
         name += " " + words[1]
     return name[:CAPS["cmd"]]
 
 
-def signature(error):
-    lines = (error or "").split("\n")[1:]
-    lines = [ln.strip() for ln in lines if ln.strip()]
-    if not lines:
+def _is_passive(words):
+    first = _base(words[0])
+    return first in PASSIVE or (first == "git" and len(words) > 1 and words[1] in PASSIVE_GIT)
+
+
+def _runs_inline_script(words):
+    real = _unwrap(words)
+    return real[0].startswith(("python", "node", "ruby", "perl")) and any(w in ("-", "-c", "-e") for w in real[1:])
+
+
+def _output_source(chain):
+    """Return the words of the command that produced the end of the output: the head of the last pipeline."""
+    i = len(chain) - 1
+    while i > 0 and chain[i - 1][1] == "|":
+        i -= 1
+    return chain[i][0]
+
+
+def _traceback_end(raw, i):
+    return next((ln for ln in raw[i + 1:] if ln.strip() and not ln[0].isspace()), None)
+
+
+def _pick_error_line(raw, names, strict, has_test):
+    """Return the first line that starts like an error. A strict search accepts only `<name>:` lines."""
+    prefix = re.compile(r"(?:\(eval\)|%s)(?::|\s+line\b)" % "|".join(re.escape(n) for n in sorted(names)))
+    for i, ln in enumerate(raw):
+        line = ln.strip()
+        if prefix.match(line):
+            return line
+        if strict:
+            continue
+        if line.startswith("Traceback (most recent call last)") and _traceback_end(raw, i):
+            return _traceback_end(raw, i).strip()
+        if ERROR_START.match(line) or (has_test and FAILED_SUMMARY.match(line)):
+            return line
+    return None
+
+
+def signature(error, command=""):
+    """Pick the line that names the failure. File content must never qualify.
+
+    A command that only shows files gets its own `<name>:` lines and nothing else. The last-line fallback
+    applies only when the end of the output came from a command that is not a file viewer or an inline script.
+    """
+    raw = (error or "").split("\n")[1:]
+    chain = parse_chain(command)
+    names = set(SHELLS)
+    names.update(_base(w[0]) for w, _ in chain or [])
+    if any(_base(w[0]) == "git" for w, _ in chain or []):
+        names.update(("fatal", "error"))
+    strict = chain is None or all(_is_passive(w) for w, _ in chain)
+    line = _pick_error_line(raw, names, strict, _test_index(chain) is not None)
+    source = _output_source(chain) if chain else None
+    if line is None and source and not _is_passive(source) and not _runs_inline_script(source):
+        line = next((ln.strip() for ln in reversed(raw) if ln.strip()), None)
+    if not line:
         return ""
-    line = next((ln for ln in lines if SIG_WORDS.search(ln)), lines[-1])
     return scrub(PATH_RE.sub("<path>", line))[:CAPS["sig"]]
 
 
@@ -295,20 +490,21 @@ def _hook(args):
             top, branch, commit = _git_info(cwd)
             obj = {
                 "t": "fail", "ts": _now(), "src": "hook", "cmd": cmd_name(command),
-                "exit": code, "sig": signature(error), "session_id": p.get("session_id") or "",
+                "exit": code, "sig": signature(error, command), "session_id": p.get("session_id") or "",
                 "transcript_path": p.get("transcript_path") or "",
                 "tool_use_id": p.get("tool_use_id") or "",
                 "repo": os.path.basename(top) if top else "",
                 "branch": branch, "commit": commit,
             }
-            if is_test_like(command):
-                obj["h"] = hashlib.sha256((command + "\0" + cwd).encode()).hexdigest()[:16]
+            h = test_hash(command, cwd)
+            if h:
+                obj["h"] = h
             write_line(path, obj)
         elif event == "PostToolUse":
-            if tool == "Bash" and is_test_like(command):
-                h = hashlib.sha256((command + "\0" + cwd).encode()).hexdigest()[:16]
-                write_line(path, {"t": "pass", "ts": _now(),
-                                  "tool_use_id": p.get("tool_use_id") or "", "h": h})
+            if tool == "Bash":
+                if test_passed(command, p.get("tool_response")):
+                    write_line(path, {"t": "pass", "ts": _now(),
+                                      "tool_use_id": p.get("tool_use_id") or "", "h": test_hash(command, cwd)})
             elif tool in EDIT_TOOLS:
                 write_line(path, {"t": "edit", "ts": _now()})
         retention()
