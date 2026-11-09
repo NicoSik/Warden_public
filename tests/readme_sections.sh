@@ -39,9 +39,8 @@ assert_contains "$R" "Windows is not supported"
 assert_contains "$R" "--from-archive"
 assert_contains "$R" ".warden-backups"
 
-# The skill table names every directory under skills/.
-for d in "$REPO_DIR"/skills/*/; do
-  s=$(basename "$d")
+# The skill table names every tracked directory under skills/. Untracked folders are local data.
+for s in $(git -C "$REPO_DIR" ls-files -- skills | awk -F/ 'NF > 2 {print $2}' | sort -u); do
   assert_contains "$R" "\`$s\`"
 done
 
