@@ -166,7 +166,7 @@ OLD_START='{"matcher":"startup|clear|compact","hooks":[{"type":"command","comman
 OLD_SUB='{"hooks":[{"type":"command","command":"\"${CLAUDE_PLUGIN_ROOT}/hooks/code-map\" SubagentStart","shell":"bash","async":false}]}'
 [ "$(jq -c '.hooks.SessionStart' "$H" 2>/dev/null)" = "[$OLD_START]" ] && pass "SessionStart entry unchanged" || fail "SessionStart entry changed"
 [ "$(jq -c '.hooks.SubagentStart' "$H" 2>/dev/null)" = "[$OLD_SUB]" ] && pass "SubagentStart entry unchanged" || fail "SubagentStart entry changed"
-[ "$(jq -c '.hooks | keys' "$H" 2>/dev/null)" = '["PostToolUse","PostToolUseFailure","SessionStart","SubagentStart"]' ] && pass "hooks.json registers exactly four events" || fail "hooks.json event set is wrong"
+[ "$(jq -c '.hooks | keys' "$H" 2>/dev/null)" = '["PostToolUse","PostToolUseFailure","PreToolUse","SessionStart","SubagentStart"]' ] && pass "hooks.json registers exactly five events" || fail "hooks.json event set is wrong"
 
 # Trigger sentence: PR #2's text, restricted to the four skills.
 SC="$W/hooks/setup-check.md"
