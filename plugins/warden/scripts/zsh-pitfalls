@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""zsh-pitfalls: a PreToolUse hook that warns when zsh would expand an unquoted word and fail.
+
+The hook adds context for the model. It never blocks a call and never decides a permission.
+"""
+import json
+import os
+import re
+import sys
+
+sys.dont_write_bytecode = True
+
+MAX_WARNINGS = 3
+HEREDOC_RE = re.compile(r"(?<!<)<<(?!<)-?\s*(?:'([^']+)'|\"([^\"]+)\"|\\?([\w.-]+))")
+ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+COMMAND_BREAKS = ";|&()\n`"
+WORD_BREAKS = " \t\r<>"
+GLOB_CHARS = "*?"
+SPECIAL_PARAMETERS = "?*@#!$-"
+DECLARATIONS = ("export", "local", "typeset", "declare", "readonly")
+
+
+class Word:
+    def __init__(self):
+        self.text = ""
+        self.equals = False  # The word starts with an unquoted `=`.
+        self.glob = -1  # The offset of the first unquoted glob character.
+        self.variable = False  # The word holds an expansion, so its final text is unknown.
+
+
+def drop_heredocs(command):
+    lines = command.split("\n")
+    out = []
+    i = 0
+    while i < len(lines):
+        out.append(lines[i])
+        delims = [a or b or c for a, b, c in HEREDOC_RE.findall(lines[i])]
+        i += 1
+        for delim in delims:
+            end = next((j for j in range(i, len(lines)) if lines[j].strip() == delim), None)
+            if end is not None:
+                i = end + 1
+    return "\n".join(out)
+
+
+def _close_double_quote(text, start):
+    i = start + 1
+    while i < len(text):
+        if text[i] == "\\":
+            i += 2
+        elif text[i] == '"':
+            return i
+        else:
+            i += 1
+    return -1
+
+
+def scan(text):
+    """Split text into simple commands of Word objects. Returns None for an unbalanced quote or expansion."""
+    commands = [[]]
+    word = None
+
+    def current():
+        nonlocal word
+        if word is None:
+            word = Word()
+            commands[-1].append(word)
+        return word
+
+    def literal(chunk, variable=False):
+        w = current()
+        w.text += chunk
+        w.variable = w.variable or variable
+
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if c == "\\":
+            if text[i + 1:i + 2] != "\n":
+                literal(text[i + 1:i + 2])
+            i += 2
+        elif c == "'":
+            end = text.find("'", i + 1)
+            if end < 0:
+                return None
+            literal(text[i + 1:end])
+            i = end + 1
+        elif c == '"':
+            end = _close_double_quote(text, i)
+            if end < 0:
+                return None
+            literal(text[i + 1:end], "$" in text[i + 1:end])
+            i = end + 1
+        elif text.startswith("$((", i) or text.startswith("${", i):
+            closer = "))" if text[i + 1] == "(" else "}"
+            end = text.find(closer, i)
+            if end < 0:
+                return None
+            literal(text[i:end + len(closer)], True)
+            i = end + len(closer)
+        elif c == "$":
+            take = 2 if text[i + 1:i + 2] and text[i + 1] in SPECIAL_PARAMETERS else 1
+            literal(text[i:i + take], True)
+            i += take
+        elif c in WORD_BREAKS:
+            word = None
+            i += 1
+        elif c in COMMAND_BREAKS:
+            word = None
+            commands.append([])
+            i += 1
+        elif c == "#" and word is None:
+            end = text.find("\n", i)
+            i = end if end >= 0 else len(text)
+        else:
+            started = word is not None
+            w = current()
+            if c == "=" and not started:
+                w.equals = True
+            if c in GLOB_CHARS and w.glob < 0:
+                w.glob = len(w.text)
+            w.text += c
+            i += 1
+    return commands
+
+
+def _matches_nothing(word, cwd):
+    import glob  # Lazy: most commands hold no bare glob.
+    return not glob.glob(os.path.join(glob.escape(cwd), os.path.expanduser(word)))
+
+
+def _word_problem(word, cwd, declaration):
+    text = word.text
+    if word.equals and len(text) > 1:
+        return ("Quote `%s`: zsh expands an unquoted word that starts with `=` to a command path, "
+                "and it stops with `not found`." % text)
+    if word.glob < 0:
+        return None
+    if "=" in text[:word.glob]:
+        if declaration:
+            return None
+        return ("Quote `%s`: zsh treats the whole word as a glob, and it stops with `no matches found`." % text)
+    if word.variable or "**" in text or not _matches_nothing(text, cwd):
+        return None
+    return ("Quote `%s` if the command must receive the pattern: it matches no file in `%s`, "
+            "and zsh stops with `no matches found`." % (text, cwd))
+
+
+def warnings(command, cwd):
+    commands = scan(drop_heredocs(command))
+    if commands is None:
+        return []
+    found = []
+    in_case = False
+    for words in commands:
+        start = 0
+        while start < len(words) and ASSIGN_RE.match(words[start].text):
+            start += 1
+        if start == len(words):
+            continue
+        first = words[start].text
+        if first == "esac":
+            in_case = False
+        if first == "case":
+            in_case = True
+        if in_case or first == "[[":
+            continue
+        for word in words[start:]:
+            problem = _word_problem(word, cwd, first in DECLARATIONS)
+            if problem and problem not in found:
+                found.append(problem)
+        if first == "cd" and len(words) > start + 1 and not words[start + 1].variable:
+            cwd = os.path.join(cwd, os.path.expanduser(words[start + 1].text))
+    return found[:MAX_WARNINGS]
+
+
+def main():
+    try:
+        payload = json.loads(sys.stdin.read())
+        if os.path.basename(os.environ.get("SHELL") or "") != "zsh" or not isinstance(payload, dict):
+            return 0
+        if payload.get("hook_event_name") != "PreToolUse" or payload.get("tool_name") != "Bash":
+            return 0
+        command = (payload.get("tool_input") or {}).get("command") or ""
+        found = warnings(command, payload.get("cwd") or os.getcwd())
+        if found:
+            text = "Zsh runs this Bash command, and zsh will fail on these words:\n- " + "\n- ".join(found)
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": text}}))
+    except BaseException:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
