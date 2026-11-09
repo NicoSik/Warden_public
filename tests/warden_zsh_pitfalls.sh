@@ -29,6 +29,50 @@ assert set(h) == {"hookEventName", "additionalContext"} and h["hookEventName"] =
 print(h["additionalContext"])' "$HOOK_OUT"
 }
 
+# reason: print the deny reason and assert that the output holds only the deny keys.
+reason() {
+  python3 -I -c '
+import json, sys
+d = json.loads(sys.argv[1])
+assert set(d) == {"hookSpecificOutput"}, d
+h = d["hookSpecificOutput"]
+assert set(h) == {"hookEventName", "permissionDecision", "permissionDecisionReason"}, h
+assert h["hookEventName"] == "PreToolUse" and h["permissionDecision"] == "deny", h
+print(h["permissionDecisionReason"])' "$HOOK_OUT"
+}
+
+# D1. The classes with zero false positives in the replay are denied, with the word in the reason.
+while IFS=$'\t' read -r cmd word; do
+  run_hook "$cmd"
+  if [ "$HOOK_RC" = 0 ] && reason | grep -qF -- "$word"; then
+    pass "denies: $cmd"
+  else
+    fail "no deny for: $cmd (rc=$HOOK_RC out='$HOOK_OUT')"
+  fi
+done <<'EOF'
+grep -r foo --include=*.ts .	--include=*.ts
+grep -r foo --include=*.ts --include=*.tsx . | head	--include=*.tsx
+echo === done	===
+[ "$a" == b ]	==
+echo =====FILE	=====FILE
+ls *.zzz; echo ===	===
+EOF
+run_hook 'ls *.zzz; echo ==='
+reason | grep -qF -- '*.zzz' && pass "a deny reason also lists the warned words" || fail "deny reason lost the warning: $HOOK_OUT"
+
+# D2. A word that zsh would accept is neither denied nor warned about.
+: > "$CWD/--include=lit.zzq"
+for cmd in 'echo =bash' 'grep x --include=*.zzq .'; do
+  run_hook "$cmd"
+  [ "$HOOK_RC" = 0 ] && [ -z "$HOOK_OUT" ] && pass "silent, zsh accepts: $cmd" || fail "false alarm for: $cmd ('$HOOK_OUT')"
+done
+
+# D3. Expansions and unmeasured forms stay warnings.
+for cmd in 'echo =$X' 'grep x --include=$X*' 'grep x --exclude=*.zzz .'; do
+  run_hook "$cmd"
+  if [ "$HOOK_RC" = 0 ] && context | grep -q Quote; then pass "warns only: $cmd"; else fail "not a plain warning: $cmd ('$HOOK_OUT')"; fi
+done
+
 # W1. Each command warns, and the warning names the word to quote.
 while IFS=$'\t' read -r cmd word; do
   run_hook "$cmd"
@@ -38,10 +82,7 @@ while IFS=$'\t' read -r cmd word; do
     fail "no warning for: $cmd (rc=$HOOK_RC out='$HOOK_OUT')"
   fi
 done <<'EOF'
-grep -r foo --include=*.ts .	--include=*.ts
 rm x include=*.tsx	include=*.tsx
-echo === done	===
-[ "$a" == b ]	==
 ls *.zzz	*.zzz
 ls /nonexistent-warden-dir/*	/nonexistent-warden-dir/*
 curl https://x.test/a?b=1	https://x.test/a?b=1
@@ -86,7 +127,7 @@ EOF
 run_hook $'cat > a <<\'EOF\'\n--include=*.ts\n===\nEOF'
 [ -z "$HOOK_OUT" ] && pass "heredoc body stays silent" || fail "heredoc body warned: $HOOK_OUT"
 run_hook $'cat > a <<EOF\nbody\nEOF\necho ==='
-context | grep -qF '===' && pass "command after a heredoc still warns" || fail "command after heredoc: '$HOOK_OUT'"
+reason | grep -qF '===' && pass "command after a heredoc is still denied" || fail "command after heredoc: '$HOOK_OUT'"
 
 # W4. The rules agree with real zsh.
 if command -v zsh >/dev/null 2>&1; then
@@ -116,10 +157,12 @@ done
 run_hook "echo 'unterminated"
 [ "$HOOK_RC" = 0 ] && [ -z "$HOOK_OUT" ] && pass "unbalanced quote stays silent" || fail "unbalanced quote: '$HOOK_OUT'"
 
-# W6. Three warnings at most, with no decision that changes permissions.
+# W6. Three items at most. A warning sets no permission decision.
 run_hook 'echo === ==== ===== ====== ======='
+[ "$(reason | grep -c 'Quote')" -le 3 ] && pass "at most three items" || fail "too many items: $(reason)"
+run_hook 'ls *.zzz *.zzy *.zzx *.zzw'
 [ "$(context | grep -c 'Quote')" -le 3 ] && pass "at most three warnings" || fail "too many warnings: $(context)"
-if printf '%s' "$HOOK_OUT" | grep -q 'permissionDecision'; then fail "hook sets a permission decision"; else pass "hook sets no permission decision"; fi
+if printf '%s' "$HOOK_OUT" | grep -q 'permissionDecision'; then fail "a warning sets a permission decision"; else pass "a warning sets no permission decision"; fi
 
 # W7. The registration is synchronous and scoped to Bash.
 if python3 -I -c '
