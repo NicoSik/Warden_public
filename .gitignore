@@ -1,3 +1,4 @@
 .DS_Store
 *.warden-backup-*
 tests/tmp/
+graphify-out/

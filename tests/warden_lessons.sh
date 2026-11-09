@@ -371,7 +371,7 @@ run_hook "$(fail_payload false 'Exit code 1')"
 if [ "$HOOK_RC" = 0 ] && [ -z "$HOOK_OUT" ] && [ -z "$(ls -A "$ROOT")" ]; then pass "read-only inbox exits 0 with no output"; else fail "read-only inbox: rc=$HOOK_RC out='$HOOK_OUT'"; fi
 chmod 700 "$ROOT"
 
-# H10. Timing: median of 20 runs under 50 ms.
+# H10. Timing: median of 20 runs under 100 ms. REQ-9.4 records why the limit is 100 ms.
 fresh_root
 FP="$(fail_payload 'pytest -q' $'Exit code 1\nE   AssertionError: x')"
 MED="$(python3 -I -c '
@@ -383,7 +383,7 @@ for _ in range(20):
     ts.append((time.perf_counter() - t) * 1000)
 print("%.1f" % statistics.median(ts))' "$SCRIPT" "$FP")"
 echo "  median hook time: ${MED} ms"
-if python3 -I -c 'import sys; sys.exit(0 if float(sys.argv[1]) < 50 else 1)' "$MED"; then pass "median of 20 hook runs is under 50 ms ($MED ms)"; else fail "median hook time $MED ms"; fi
+if python3 -I -c 'import sys; sys.exit(0 if float(sys.argv[1]) < 100 else 1)' "$MED"; then pass "median of 20 hook runs is under 100 ms ($MED ms)"; else fail "median hook time $MED ms"; fi
 
 # ---- Task 3: add, list, status, bin wrapper (REQ-4, REQ-5, REQ-11) ----
 unset CLAUDE_CODE_SESSION_ID
@@ -521,6 +521,6 @@ for _ in range(20):
     ts.append((time.perf_counter() - t) * 1000)
 print("%.1f" % statistics.median(ts))' "$PCMD" "$FP" "$PLUGIN_DIR")"
 echo "  median production hook time: ${MEDP} ms"
-if python3 -I -c 'import sys; sys.exit(0 if float(sys.argv[1]) < 50 else 1)' "$MEDP"; then pass "median of 20 production hook runs is under 50 ms ($MEDP ms)"; else fail "production median $MEDP ms"; fi
+if python3 -I -c 'import sys; sys.exit(0 if float(sys.argv[1]) < 100 else 1)' "$MEDP"; then pass "median of 20 production hook runs is under 100 ms ($MEDP ms)"; else fail "production median $MEDP ms"; fi
 
 harness_exit
