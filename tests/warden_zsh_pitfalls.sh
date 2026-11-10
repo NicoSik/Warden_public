@@ -9,6 +9,9 @@ CWD="$(mktemp -d "$HARNESS_TMP/cwd.XXXXXX")"
 mkdir -p "$CWD/sub" "$CWD/txtonly"
 : > "$CWD/a.txt"; : > "$CWD/sub/b.py"; : > "$CWD/txtonly/c.txt"
 export SHELL=/bin/zsh
+unset CLAUDE_CODE_SHELL WARDEN_ZSH_GUARD
+FAKE="$HARNESS_TMP/fake"; mkdir -p "$FAKE"
+for name in bash zsh fish; do printf '#!/bin/sh\n' > "$FAKE/$name"; chmod +x "$FAKE/$name"; done
 
 # run_hook COMMAND [TOOL] [EVENT]: put the stdout in HOOK_OUT and the status in HOOK_RC.
 run_hook() {
@@ -71,6 +74,40 @@ done
 for cmd in 'echo =$X' 'grep x --include=$X*' 'grep x --exclude=*.zzz .'; do
   run_hook "$cmd"
   if [ "$HOOK_RC" = 0 ] && context | grep -q Quote; then pass "warns only: $cmd"; else fail "not a plain warning: $cmd ('$HOOK_OUT')"; fi
+done
+
+# D4. A command that zsh would stop on is allowed when bash runs it.
+DENIED=('echo === done' 'grep -r foo --include=*.ts .' '[ "$a" == b ]')
+for cmd in "${DENIED[@]}"; do
+  SHELL=/bin/bash run_hook "$cmd"
+  [ "$HOOK_RC" = 0 ] && [ -z "$HOOK_OUT" ] && pass "allowed under bash: $cmd" || fail "bash run was not allowed: $cmd ('$HOOK_OUT')"
+done
+if bash -c 'echo === done; echo --include=*.zzz' >/dev/null 2>&1; then pass "real bash runs the words that zsh stops on"; else fail "real bash rejected the words"; fi
+
+# D5. CLAUDE_CODE_SHELL decides the shell. A value that is not a working bash or zsh is ignored.
+CLAUDE_CODE_SHELL="$FAKE/bash" run_hook 'echo === done'
+[ -z "$HOOK_OUT" ] && pass "CLAUDE_CODE_SHELL=bash overrides SHELL=zsh" || fail "override to bash ignored: $HOOK_OUT"
+SHELL=/bin/bash CLAUDE_CODE_SHELL="$FAKE/zsh" run_hook 'echo === done'
+reason | grep -qF '===' && pass "CLAUDE_CODE_SHELL=zsh overrides SHELL=bash" || fail "override to zsh ignored: '$HOOK_OUT'"
+CLAUDE_CODE_SHELL=/nonexistent/bash run_hook 'echo === done'
+reason | grep -qF '===' && pass "a CLAUDE_CODE_SHELL path that does not work is ignored" || fail "broken override used: '$HOOK_OUT'"
+CLAUDE_CODE_SHELL="$FAKE/fish" run_hook 'echo === done'
+reason | grep -qF '===' && pass "an unsupported CLAUDE_CODE_SHELL is ignored" || fail "fish override used: '$HOOK_OUT'"
+SHELL=/usr/bin/fish run_hook 'echo === done'
+[ -z "$HOOK_OUT" ] && pass "a shell that is not known to be zsh stays silent" || fail "unknown shell: $HOOK_OUT"
+
+# D6. WARDEN_ZSH_GUARD=warn turns every deny into a warning. Any other value keeps the deny.
+for cmd in "${DENIED[@]}"; do
+  WARDEN_ZSH_GUARD=warn run_hook "$cmd"
+  if [ "$HOOK_RC" = 0 ] && context | grep -q Quote; then pass "warn mode only warns: $cmd"; else fail "warn mode: $cmd ('$HOOK_OUT')"; fi
+done
+WARDEN_ZSH_GUARD=warn run_hook 'grep x --include=*.ts .'
+if printf '%s' "$HOOK_OUT" | grep -q permissionDecision; then fail "warn mode set a permission decision"; else pass "warn mode sets no permission decision"; fi
+WARDEN_ZSH_GUARD=warn run_hook 'echo "==="'
+[ -z "$HOOK_OUT" ] && pass "warn mode stays silent on a safe command" || fail "warn mode on a safe command: $HOOK_OUT"
+for value in deny WARN ''; do
+  WARDEN_ZSH_GUARD="$value" run_hook 'echo === done'
+  reason | grep -qF '===' && pass "WARDEN_ZSH_GUARD='$value' keeps the deny" || fail "value '$value' changed the deny: '$HOOK_OUT'"
 done
 
 # W1. Each command warns, and the warning names the word to quote.

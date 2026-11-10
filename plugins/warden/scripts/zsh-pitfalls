@@ -3,6 +3,7 @@
 
 The hook denies a call only for the classes that had no false positive in a replay of real sessions:
 an unquoted `=word` and an unquoted `--include=` glob. Every other pitfall only adds context for the model.
+Set WARDEN_ZSH_GUARD=warn to turn every deny into a warning.
 """
 import json
 import os
@@ -185,10 +186,18 @@ def warnings(command, cwd):
     return sorted(found, key=lambda item: not item[0])[:MAX_WARNINGS]
 
 
+def runs_in_zsh():
+    """Follow the shell choice of Claude Code: a working CLAUDE_CODE_SHELL, then SHELL."""
+    override = os.environ.get("CLAUDE_CODE_SHELL") or ""
+    if os.path.basename(override) in ("bash", "zsh") and os.access(override, os.X_OK):
+        return os.path.basename(override) == "zsh"
+    return os.path.basename(os.environ.get("SHELL") or "") == "zsh"
+
+
 def main():
     try:
         payload = json.loads(sys.stdin.read())
-        if os.path.basename(os.environ.get("SHELL") or "") != "zsh" or not isinstance(payload, dict):
+        if not runs_in_zsh() or not isinstance(payload, dict):
             return 0
         if payload.get("hook_event_name") != "PreToolUse" or payload.get("tool_name") != "Bash":
             return 0
@@ -197,7 +206,7 @@ def main():
         if found:
             items = "\n- ".join(message for _, message in found)
             output = {"hookEventName": "PreToolUse"}
-            if any(deny for deny, _ in found):
+            if os.environ.get("WARDEN_ZSH_GUARD") != "warn" and any(deny for deny, _ in found):
                 output["permissionDecision"] = "deny"
                 output["permissionDecisionReason"] = (
                     "The hook blocked this Bash command because zsh would stop on these words. "
