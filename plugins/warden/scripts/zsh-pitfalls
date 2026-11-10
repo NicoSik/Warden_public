@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """zsh-pitfalls: a PreToolUse hook that warns when zsh would expand an unquoted word and fail.
 
-The hook adds context for the model. It never blocks a call and never decides a permission.
+The hook denies a call only for the classes that had no false positive in a replay of real sessions:
+an unquoted `=word` and an unquoted `--include=` glob. Every other pitfall only adds context for the model.
+Set WARDEN_ZSH_GUARD=warn to turn every deny into a warning.
 """
 import json
 import os
@@ -129,20 +131,30 @@ def _matches_nothing(word, cwd):
     return not glob.glob(os.path.join(glob.escape(cwd), os.path.expanduser(word)))
 
 
+def _names_a_command(name):
+    import shutil  # Lazy: most commands hold no `=word`.
+    return shutil.which(name) is not None
+
+
 def _word_problem(word, cwd, declaration):
+    """Return (deny, message) when zsh would fail on the word, else None."""
     text = word.text
     if word.equals and len(text) > 1:
-        return ("Quote `%s`: zsh expands an unquoted word that starts with `=` to a command path, "
+        if not word.variable and _names_a_command(text[1:]):
+            return None
+        return (not word.variable,
+                "Quote `%s`: zsh expands an unquoted word that starts with `=` to a command path, "
                 "and it stops with `not found`." % text)
     if word.glob < 0:
         return None
     if "=" in text[:word.glob]:
-        if declaration:
+        if declaration or (not word.variable and not _matches_nothing(text, cwd)):
             return None
-        return ("Quote `%s`: zsh treats the whole word as a glob, and it stops with `no matches found`." % text)
+        return (text.startswith("--include=") and not word.variable,
+                "Quote `%s`: zsh treats the whole word as a glob, and it stops with `no matches found`." % text)
     if word.variable or "**" in text or not _matches_nothing(text, cwd):
         return None
-    return ("Quote `%s` if the command must receive the pattern: it matches no file in `%s`, "
+    return (False, "Quote `%s` if the command must receive the pattern: it matches no file in `%s`, "
             "and zsh stops with `no matches found`." % (text, cwd))
 
 
@@ -171,21 +183,37 @@ def warnings(command, cwd):
                 found.append(problem)
         if first == "cd" and len(words) > start + 1 and not words[start + 1].variable:
             cwd = os.path.join(cwd, os.path.expanduser(words[start + 1].text))
-    return found[:MAX_WARNINGS]
+    return sorted(found, key=lambda item: not item[0])[:MAX_WARNINGS]
+
+
+def runs_in_zsh():
+    """Follow the shell choice of Claude Code: a working CLAUDE_CODE_SHELL, then SHELL."""
+    override = os.environ.get("CLAUDE_CODE_SHELL") or ""
+    if os.path.basename(override) in ("bash", "zsh") and os.access(override, os.X_OK):
+        return os.path.basename(override) == "zsh"
+    return os.path.basename(os.environ.get("SHELL") or "") == "zsh"
 
 
 def main():
     try:
         payload = json.loads(sys.stdin.read())
-        if os.path.basename(os.environ.get("SHELL") or "") != "zsh" or not isinstance(payload, dict):
+        if not runs_in_zsh() or not isinstance(payload, dict):
             return 0
         if payload.get("hook_event_name") != "PreToolUse" or payload.get("tool_name") != "Bash":
             return 0
         command = (payload.get("tool_input") or {}).get("command") or ""
         found = warnings(command, payload.get("cwd") or os.getcwd())
         if found:
-            text = "Zsh runs this Bash command, and zsh will fail on these words:\n- " + "\n- ".join(found)
-            print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": text}}))
+            items = "\n- ".join(message for _, message in found)
+            output = {"hookEventName": "PreToolUse"}
+            if os.environ.get("WARDEN_ZSH_GUARD") != "warn" and any(deny for deny, _ in found):
+                output["permissionDecision"] = "deny"
+                output["permissionDecisionReason"] = (
+                    "The hook blocked this Bash command because zsh would stop on these words. "
+                    "Fix them and run the command again:\n- " + items)
+            else:
+                output["additionalContext"] = "Zsh runs this Bash command, and zsh will fail on these words:\n- " + items
+            print(json.dumps({"hookSpecificOutput": output}))
     except BaseException:
         pass
     return 0
