@@ -611,6 +611,24 @@ for c in ["sed -n 1,5p tests/a.sh", "cat tests/a.sh", "git add tests/a.sh", "gre
     assert not wl.is_test_like(c), c
 '; then pass "test-like finds a test anywhere in a chain and ignores mentions"; else fail "chain test-like wrong"; fi
 
+# Q6. A node:internal stack frame never becomes the signature; the Error: line does.
+if py '
+crash = ("Exit code 1\nnode:internal/modules/cjs/loader:1228\n  throw err;\n  ^\n\n"
+         "Error: Cannot find module \x27/a/b.js\x27\n"
+         "    at Module._resolveFilename (node:internal/modules/cjs/loader:1225:15)")
+want = "Error: Cannot find module \x27<path>\x27"
+got = wl.signature(crash, "node b.js")
+assert got == want, got
+got = wl.signature(crash, "npx vitest run")
+assert got == want, got
+got = wl.signature("Exit code 1\nnode:internal/process/task_queues:95\n    at process.processTicksAndRejections (x)", "node x.js")
+assert not got.startswith("node:internal"), got
+got = wl.signature("Exit code 1\nnode:internal/process/task_queues:95", "node x.js")
+assert got == "", got
+got = wl.signature("Exit code 9\nnode: bad option: --foo", "node --foo")
+assert got == "node: bad option: --foo", got
+'; then pass "node:internal frames are skipped and the Error: line is the signature"; else fail "node:internal frame became the signature"; fi
+
 # Q5. Fix links survive output decoration; a hidden failure never counts as a pass.
 linked() { WL list --json | jq1 'assert rs[0]["fixed"] is '"$1"', rs'; }
 plines() { cat "$(sess)" 2>/dev/null | grep -c '"t":"pass"'; }
@@ -643,5 +661,93 @@ fresh_root
 run_hook "$(fail_payload 'pytest -q' $'Exit code 1\nFAILED tests/a.py::t')"
 run_hook "$(payload PostToolUse Bash 'pytest -q tests/a.py' '')"
 linked False && pass "a narrower rerun stays unlinked (known limit)" || fail "narrower rerun linked"
+
+# ---- Lesson report (2026-11-lesson-report) ----
+# rfail SESSION REPO CMD SIG [H]: append one fail line to sessions/SESSION.jsonl.
+rfail() {
+  local h=""; [ -n "${5:-}" ] && h=",\"h\":\"$5\""
+  printf '{"t":"fail","ts":"2026-11-1%sT00:00:00Z","src":"hook","cmd":"%s","exit":1,"sig":"%s","session_id":"%s","transcript_path":"","tool_use_id":"u","repo":"%s","branch":"b","commit":"c"%s}\n' \
+    "${1#s}" "$3" "$4" "$1" "$2" "$h" >> "$ROOT/sessions/$1.jsonl"
+}
+rline() { echo "$2" >> "$ROOT/sessions/$1.jsonl"; }
+fresh_root; mkdir -p "$ROOT/sessions"
+rfail s1 alpha git "fatal: not a git repository"
+rfail s4 beta git "fatal: not a git repository"
+for s in s1 s2 s3; do rfail "$s" alpha echo "zsh:1: command not found: foo"; done
+for i in 1 2 3; do rfail s2 alpha make "make: *** [all] Error 2"; done
+rfail s1 alpha python "KeyError: 'k'"
+rfail s3 alpha python "KeyError: 'k'"
+rfail s2 alpha python "AttributeError: 'list' object has no attribute 'keys'"
+rfail s2 alpha python3 "ModuleNotFoundError: No module named 'yaml'"
+rfail s3 alpha pytest "FAILED tests/a.py::t" aaaa1111aaaa1111
+rline s3 '{"t":"edit","ts":"2026-11-13T00:00:01Z"}'
+rline s3 '{"t":"pass","ts":"2026-11-13T00:00:02Z","tool_use_id":"tp1","h":"aaaa1111aaaa1111"}'
+rfail s4 beta pytest "FAILED tests/b.py::t" bbbb2222bbbb2222
+rline s4 '{"t":"pass","ts":"2026-11-14T00:00:02Z","tool_use_id":"tp2","h":"bbbb2222bbbb2222"}'
+rfail s4 beta awk ""
+printf '{"t":"lesson","ts":"2026-11-15T00:00:00Z","src":"user","text":"remember the setup check","repo":"alpha","branch":"b","commit":"c"}\n' > "$ROOT/manual.jsonl"
+
+if py '
+rows, lessons, hidden = wl.report_rows()
+by = {r["sig"]: r for r in rows}
+flagged = [r["sig"] for r in rows if r["flagged"]]
+assert sorted(flagged) == ["fatal: not a git repository", "zsh:1: command not found: foo"], flagged
+assert [r["flagged"] for r in rows[:2]] == [True, True], rows[:2]
+m = by["make: *** [all] Error 2"]
+assert m["count"] == 3 and m["sessions"] == 1 and not m["flagged"], m
+assert set(by) == {"fatal: not a git repository", "zsh:1: command not found: foo", "make: *** [all] Error 2",
+                   "KeyError: \x27k\x27", "ModuleNotFoundError: No module named \x27yaml\x27", "FAILED tests/b.py::t"}, set(by)
+assert by["FAILED tests/b.py::t"]["flaky"] is True, by["FAILED tests/b.py::t"]
+assert all(r["hidden"] is None for r in rows), rows
+assert by["fatal: not a git repository"]["repos"] == ["alpha", "beta"], by["fatal: not a git repository"]
+assert hidden == {"fixed test failure": 1, "one-off exception": 1, "no signature": 1}, hidden
+allrows, _, hidden2 = wl.report_rows(include_hidden=True)
+assert len(allrows) == 9 and hidden2 == hidden, (len(allrows), hidden2)
+extra = {r["sig"]: r["hidden"] for r in allrows if r["hidden"]}
+assert extra == {"FAILED tests/a.py::t": "fixed test failure",
+                 "AttributeError: \x27list\x27 object has no attribute \x27keys\x27": "one-off exception",
+                 "": "no signature"}, extra
+assert [l["text"] for l in lessons] == ["remember the setup check"], lessons
+'; then pass "report flags repeats, hides the noise and counts it per reason"; else fail "report rows wrong"; fi
+
+BEFORE="$(find "$ROOT" -type f -exec shasum {} + | sort)"
+ROUT="$(WL report)"; RC1=$?
+AOUT="$(WL report --all)"; RC2=$?
+AFTER="$(find "$ROOT" -type f -exec shasum {} + | sort)"
+LAST="$(printf '%s\n' "$ROUT" | tail -1)"
+[ "$RC1" = 0 ] && [ "$RC2" = 0 ] && [ "$LAST" = "hidden: 1 fixed test failure, 1 one-off exception, 1 no signature" ] \
+  && pass "report ends with the hidden count per reason" || fail "report footer: rc=$RC1/$RC2 last='$LAST'"
+NDEF="$(printf '%s\n' "$ROUT" | grep -c 'hidden(')"; NALL="$(printf '%s\n' "$AOUT" | grep -c 'hidden(')"
+[ "$NDEF" = 0 ] && [ "$NALL" = 3 ] && pass "report --all shows the 3 hidden rows" || fail "hidden markers: default $NDEF, all $NALL"
+printf '%s\n' "$ROUT" | grep -q '^!!  s2  x2  alpha,beta  git  fatal: not a git repository$' \
+  && printf '%s\n' "$ROUT" | grep -q '^Lessons:$' && printf '%s\n' "$ROUT" | grep -q 'flaky' \
+  && pass "report rows show flag, sessions, count, repos, cmd and sig" || fail "report text: $ROUT"
+[ "$BEFORE" = "$AFTER" ] && pass "report leaves the inbox unchanged" || fail "report changed the inbox"
+fresh_root; mkdir -p "$ROOT/sessions"
+rfail s1 alpha pytest "FAILED tests/a.py::t" aaaa1111aaaa1111
+rline s1 '{"t":"edit","ts":"2026-11-11T00:00:01Z"}'
+rline s1 '{"t":"pass","ts":"2026-11-11T00:00:02Z","tool_use_id":"tp1","h":"aaaa1111aaaa1111"}'
+rfail s2 alpha pytest "FAILED tests/a.py::t" aaaa1111aaaa1111
+rline s2 '{"t":"edit","ts":"2026-11-12T00:00:01Z"}'
+rline s2 '{"t":"pass","ts":"2026-11-12T00:00:02Z","tool_use_id":"tp2","h":"aaaa1111aaaa1111"}'
+if py '
+rows, _, hidden = wl.report_rows()
+assert [r["sig"] for r in rows] == ["FAILED tests/a.py::t"] and rows[0]["sessions"] == 2 and hidden == {}, (rows, hidden)
+'; then pass "a fixed test failure seen again in a second session is shown"; else fail "fixed failure in 2 sessions stayed hidden"; fi
+fresh_root; mkdir -p "$ROOT/sessions"
+for sig in "FileNotFoundError: x" "PermissionError: x" "ConnectionRefusedError: x" "TimeoutError: x" "OSError: x" \
+           "ImportError: x" "ModuleNotFoundError: x" "ValueError: x"; do
+  rfail s1 alpha python "$sig"
+done
+if py '
+rows, _, hidden = wl.report_rows()
+shown = sorted(r["sig"] for r in rows)
+assert shown == sorted(c + ": x" for c in ["FileNotFoundError", "PermissionError", "ConnectionRefusedError",
+                                            "TimeoutError", "OSError", "ImportError", "ModuleNotFoundError"]), shown
+assert hidden == {"one-off exception": 1}, hidden
+'; then pass "environment exception classes stay visible; a code exception is hidden"; else fail "environment exceptions hidden"; fi
+fresh_root
+EOUT="$(WL report)"; RC=$?
+[ "$RC" = 0 ] && [ "$EOUT" = "hidden: 0" ] && [ ! -e "$ROOT" ] && pass "report on an empty inbox prints hidden: 0" || fail "empty report: rc=$RC out='$EOUT'"
 
 harness_exit
