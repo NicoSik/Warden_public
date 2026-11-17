@@ -396,6 +396,8 @@ def _pick_error_line(raw, names, strict, has_test):
     prefix = re.compile(r"(?:\(eval\)|%s)(?::|\s+line\b)" % "|".join(re.escape(n) for n in sorted(names)))
     for i, ln in enumerate(raw):
         line = ln.strip()
+        if line.startswith("node:internal/"):  # A Node stack frame, not the error.
+            continue
         if prefix.match(line):
             return line
         if strict:

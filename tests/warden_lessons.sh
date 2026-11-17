@@ -611,6 +611,22 @@ for c in ["sed -n 1,5p tests/a.sh", "cat tests/a.sh", "git add tests/a.sh", "gre
     assert not wl.is_test_like(c), c
 '; then pass "test-like finds a test anywhere in a chain and ignores mentions"; else fail "chain test-like wrong"; fi
 
+# Q6. A node:internal stack frame never becomes the signature; the Error: line does.
+if py '
+crash = ("Exit code 1\nnode:internal/modules/cjs/loader:1228\n  throw err;\n  ^\n\n"
+         "Error: Cannot find module \x27/a/b.js\x27\n"
+         "    at Module._resolveFilename (node:internal/modules/cjs/loader:1225:15)")
+want = "Error: Cannot find module \x27<path>\x27"
+got = wl.signature(crash, "node b.js")
+assert got == want, got
+got = wl.signature(crash, "npx vitest run")
+assert got == want, got
+got = wl.signature("Exit code 1\nnode:internal/process/task_queues:95\n    at process.processTicksAndRejections (x)", "node x.js")
+assert not got.startswith("node:internal"), got
+got = wl.signature("Exit code 9\nnode: bad option: --foo", "node --foo")
+assert got == "node: bad option: --foo", got
+'; then pass "node:internal frames are skipped and the Error: line is the signature"; else fail "node:internal frame became the signature"; fi
+
 # Q5. Fix links survive output decoration; a hidden failure never counts as a pass.
 linked() { WL list --json | jq1 'assert rs[0]["fixed"] is '"$1"', rs'; }
 plines() { cat "$(sess)" 2>/dev/null | grep -c '"t":"pass"'; }
