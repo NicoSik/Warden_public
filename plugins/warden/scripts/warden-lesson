@@ -425,7 +425,8 @@ def signature(error, command=""):
     line = _pick_error_line(raw, names, strict, _test_index(chain) is not None)
     source = _output_source(chain) if chain else None
     if line is None and source and not _is_passive(source) and not _runs_inline_script(source):
-        line = next((ln.strip() for ln in reversed(raw) if ln.strip()), None)
+        line = next((ln.strip() for ln in reversed(raw)
+                     if ln.strip() and not ln.strip().startswith("node:internal/")), None)
     if not line:
         return ""
     return scrub(PATH_RE.sub("<path>", line))[:CAPS["sig"]]

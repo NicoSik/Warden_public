@@ -623,6 +623,8 @@ got = wl.signature(crash, "npx vitest run")
 assert got == want, got
 got = wl.signature("Exit code 1\nnode:internal/process/task_queues:95\n    at process.processTicksAndRejections (x)", "node x.js")
 assert not got.startswith("node:internal"), got
+got = wl.signature("Exit code 1\nnode:internal/process/task_queues:95", "node x.js")
+assert got == "", got
 got = wl.signature("Exit code 9\nnode: bad option: --foo", "node --foo")
 assert got == "node: bad option: --foo", got
 '; then pass "node:internal frames are skipped and the Error: line is the signature"; else fail "node:internal frame became the signature"; fi
@@ -721,6 +723,17 @@ printf '%s\n' "$ROUT" | grep -q '^!!  s2  x2  alpha,beta  git  fatal: not a git 
   && printf '%s\n' "$ROUT" | grep -q '^Lessons:$' && printf '%s\n' "$ROUT" | grep -q 'flaky' \
   && pass "report rows show flag, sessions, count, repos, cmd and sig" || fail "report text: $ROUT"
 [ "$BEFORE" = "$AFTER" ] && pass "report leaves the inbox unchanged" || fail "report changed the inbox"
+fresh_root; mkdir -p "$ROOT/sessions"
+rfail s1 alpha pytest "FAILED tests/a.py::t" aaaa1111aaaa1111
+rline s1 '{"t":"edit","ts":"2026-11-11T00:00:01Z"}'
+rline s1 '{"t":"pass","ts":"2026-11-11T00:00:02Z","tool_use_id":"tp1","h":"aaaa1111aaaa1111"}'
+rfail s2 alpha pytest "FAILED tests/a.py::t" aaaa1111aaaa1111
+rline s2 '{"t":"edit","ts":"2026-11-12T00:00:01Z"}'
+rline s2 '{"t":"pass","ts":"2026-11-12T00:00:02Z","tool_use_id":"tp2","h":"aaaa1111aaaa1111"}'
+if py '
+rows, _, hidden = wl.report_rows()
+assert [r["sig"] for r in rows] == ["FAILED tests/a.py::t"] and rows[0]["sessions"] == 2 and hidden == {}, (rows, hidden)
+'; then pass "a fixed test failure seen again in a second session is shown"; else fail "fixed failure in 2 sessions stayed hidden"; fi
 fresh_root
 EOUT="$(WL report)"; RC=$?
 [ "$RC" = 0 ] && [ "$EOUT" = "hidden: 0" ] && [ ! -e "$ROOT" ] && pass "report on an empty inbox prints hidden: 0" || fail "empty report: rc=$RC out='$EOUT'"
