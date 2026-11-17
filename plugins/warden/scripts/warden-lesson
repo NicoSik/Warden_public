@@ -613,7 +613,8 @@ def _all_records():
 
 HIDE_REASONS = ("fixed test failure", "one-off exception", "no signature")
 EXCEPTION_RE = re.compile(r"(?:[\w.]+\.)?(\w+(?:Error|Exception)):")
-ENV_EXCEPTIONS = frozenset({"ModuleNotFoundError", "ImportError"})
+ENV_EXCEPTIONS = frozenset({"ModuleNotFoundError", "ImportError", "FileNotFoundError", "PermissionError",
+                            "ConnectionRefusedError", "TimeoutError", "OSError"})
 
 
 def _hide_reason(g):

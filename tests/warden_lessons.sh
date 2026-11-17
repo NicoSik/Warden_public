@@ -734,6 +734,18 @@ if py '
 rows, _, hidden = wl.report_rows()
 assert [r["sig"] for r in rows] == ["FAILED tests/a.py::t"] and rows[0]["sessions"] == 2 and hidden == {}, (rows, hidden)
 '; then pass "a fixed test failure seen again in a second session is shown"; else fail "fixed failure in 2 sessions stayed hidden"; fi
+fresh_root; mkdir -p "$ROOT/sessions"
+for sig in "FileNotFoundError: x" "PermissionError: x" "ConnectionRefusedError: x" "TimeoutError: x" "OSError: x" \
+           "ImportError: x" "ModuleNotFoundError: x" "ValueError: x"; do
+  rfail s1 alpha python "$sig"
+done
+if py '
+rows, _, hidden = wl.report_rows()
+shown = sorted(r["sig"] for r in rows)
+assert shown == sorted(c + ": x" for c in ["FileNotFoundError", "PermissionError", "ConnectionRefusedError",
+                                            "TimeoutError", "OSError", "ImportError", "ModuleNotFoundError"]), shown
+assert hidden == {"one-off exception": 1}, hidden
+'; then pass "environment exception classes stay visible; a code exception is hidden"; else fail "environment exceptions hidden"; fi
 fresh_root
 EOUT="$(WL report)"; RC=$?
 [ "$RC" = 0 ] && [ "$EOUT" = "hidden: 0" ] && [ ! -e "$ROOT" ] && pass "report on an empty inbox prints hidden: 0" || fail "empty report: rc=$RC out='$EOUT'"

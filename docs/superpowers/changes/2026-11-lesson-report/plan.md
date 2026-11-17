@@ -20,7 +20,7 @@
 - A fixed test failure is a session record with `fixed` true and `edits` > 0. A record with `fixed` true and `edits` == 0 is flaky.
 - Hidden reasons, exact strings: `fixed test failure`, `one-off exception`, `no signature`.
 - A hide rule other than `no signature` applies only when the signature occurs in exactly 1 session.
-- Exception signature: matches `^(?:[\w.]+\.)?\w+(?:Error|Exception):`. Bare `Error:` and `error:` do not match, because tools print them. Environment classes stay visible: `ModuleNotFoundError`, `ImportError`.
+- Exception signature: matches `^(?:[\w.]+\.)?\w+(?:Error|Exception):`. Bare `Error:` and `error:` do not match, because tools print them. Environment classes stay visible: `ModuleNotFoundError`, `ImportError`, `FileNotFoundError`, `PermissionError`, `ConnectionRefusedError`, `TimeoutError`, `OSError` (the last five added after the final review, finding F4).
 - Run Python as `python3 -I`. Write no `__pycache__`.
 - No committed file holds a machine path.
 

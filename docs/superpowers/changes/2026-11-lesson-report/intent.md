@@ -31,7 +31,8 @@ their own, ungrouped. Node failures get the `Error:` line as their signature.
   except for the Node signature fix.
 - A fixed test failure is a test failure that passed again with more than 0 edits in between.
 - A one-off exception is an exception signature seen once, in one session.
-  Environment classes stay visible: `ModuleNotFoundError`, `ImportError`, `command not found`.
+  Environment classes stay visible: `ModuleNotFoundError`, `ImportError`, `FileNotFoundError`,
+  `PermissionError`, `ConnectionRefusedError`, `TimeoutError`, `OSError`, and `command not found`.
 
 ## Out of scope
 - Proposals, rule drafts or any automatic action from the report.
