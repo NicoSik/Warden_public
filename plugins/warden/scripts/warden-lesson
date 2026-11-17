@@ -560,12 +560,17 @@ def _log_files():
     return files, os.path.join(root, "manual.jsonl")
 
 
+def _norm(sig):
+    """Return the signature with every digit run replaced by N. Both groupings use it."""
+    return re.sub(r"\d+", "N", str(sig or ""))
+
+
 def _session_records(lines):
     groups = {}
     for i, d in enumerate(lines):
         if d.get("t") != "fail":
             continue
-        key = (d.get("cmd"), d.get("exit"), re.sub(r"\d+", "N", str(d.get("sig") or "")))
+        key = (d.get("cmd"), d.get("exit"), _norm(d.get("sig")))
         g = groups.get(key)
         if g is None:
             g = groups[key] = {"first": d, "count": 0, "last_i": i, "h": d.get("h")}
@@ -603,6 +608,80 @@ def _all_records():
                          "session_id": d.get("session_id") or ""})
     recs.sort(key=lambda r: r["ts"], reverse=True)
     return recs
+
+
+HIDE_REASONS = ("fixed test failure", "one-off exception", "no signature")
+EXCEPTION_RE = re.compile(r"(?:[\w.]+\.)?(\w+(?:Error|Exception)):")
+ENV_EXCEPTIONS = frozenset({"ModuleNotFoundError", "ImportError"})
+
+
+def _hide_reason(g):
+    """Return why a report group is hidden, or None. Only `no signature` hides a group seen in 2+ sessions."""
+    if not g["sig"]:
+        return "no signature"
+    if g["flagged"] or len(g["sessions"]) != 1:
+        return None
+    if all(r["fixed"] and r.get("edits", 0) > 0 for r in g["recs"]):
+        return "fixed test failure"
+    m = EXCEPTION_RE.match(g["sig"])
+    if m and m.group(1) not in ENV_EXCEPTIONS:
+        return "one-off exception"
+    return None
+
+
+def report_rows(include_hidden=False):
+    """Group the failures of every session by normalized signature. Read-only.
+
+    Return (rows, lessons, hidden_counts). hidden_counts does not depend on include_hidden.
+    """
+    files, manual = _log_files()
+    groups = {}
+    for f in files:
+        session = os.path.basename(f)[:-len(".jsonl")]
+        for r in _session_records(_read_lines(f)):
+            g = groups.setdefault(_norm(r["sig"]), {"sig": r["sig"], "recs": [], "sessions": set()})
+            g["recs"].append(r)
+            g["sessions"].add(session)
+    rows, hidden_counts = [], {}
+    for norm, g in groups.items():
+        repos = sorted({r["repo"] for r in g["recs"] if r["repo"]})
+        g["flagged"] = len(repos) >= 2 or len(g["sessions"]) >= 3
+        reason = _hide_reason(g)
+        if reason:
+            hidden_counts[reason] = hidden_counts.get(reason, 0) + 1
+            if not include_hidden:
+                continue
+        rows.append({"sig": g["sig"], "norm": norm, "sessions": len(g["sessions"]), "repos": repos,
+                     "count": sum(r["count"] for r in g["recs"]),
+                     "cmds": sorted({r["cmd"] for r in g["recs"] if r["cmd"]}),
+                     "last_ts": max(r["ts"] for r in g["recs"]), "flagged": g["flagged"],
+                     "flaky": any(r["fixed"] and r.get("edits", 0) == 0 for r in g["recs"]),
+                     "hidden": reason})
+    rows.sort(key=lambda r: r["last_ts"], reverse=True)
+    rows.sort(key=lambda r: (not r["flagged"], -r["sessions"]))
+    lessons = [d for d in _all_records() if d["t"] == "lesson"]
+    return rows, lessons, hidden_counts
+
+
+def _report(args):
+    rows, lessons, hidden = report_rows(include_hidden=args.all)
+    for r in rows:
+        parts = ["!!" if r["flagged"] else "--", "s%d" % r["sessions"], "x%d" % r["count"],
+                 ",".join(r["repos"]) or "-", ",".join(r["cmds"]) or "-", r["sig"] or "-"]
+        if r["flaky"]:
+            parts.append("flaky")
+        if r["hidden"]:
+            parts.append("hidden(%s)" % r["hidden"])
+        print("  ".join(parts))
+    if lessons:
+        print("\nLessons:")
+        for d in lessons:
+            print("  ".join([d["ts"][:10], d["src"], d["repo"] or "-", d["text"]]))
+    if rows or lessons:
+        print()
+    shown = ["%d %s" % (hidden[k], k) for k in HIDE_REASONS if hidden.get(k)]
+    print("hidden: " + (", ".join(shown) if shown else "0"))
+    return 0
 
 
 def _list(args):
@@ -643,6 +722,9 @@ def main(argv=None):
     pl = sub.add_parser("list")
     pl.add_argument("--json", action="store_true")
     pl.set_defaults(func=_list)
+    pr = sub.add_parser("report")
+    pr.add_argument("--all", action="store_true")
+    pr.set_defaults(func=_report)
     sub.add_parser("status").set_defaults(func=_status)
     sub.add_parser("hook").set_defaults(func=_hook)
     args, _ = parser.parse_known_args(argv)
