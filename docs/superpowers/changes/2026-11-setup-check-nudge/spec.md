@@ -1,6 +1,6 @@
 # Spec: setup-check-nudge
 
-Intent: `intent.md`. Date: 2026-11-18. Status: draft.
+Intent: `intent.md`. Date: 2026-11-18. Status: approved.
 
 ## Summary
 
@@ -9,7 +9,7 @@ repository, the hook reminds the main agent once to run the setup check, as soon
 repository has enough code for a code graph. Repositories that existed before the session
 keep the current SessionStart rule unchanged.
 
-Size: 11 requirements from 14 intent items and 15 design decisions. The count is above the
+Size: 11 requirements from 14 intent items and 19 design decisions. The count is above the
 guide of about ten because the safety rule (REQ-9) and the cost rule (REQ-10) each carry their
 own proof. The change is still one subsystem.
 
@@ -66,7 +66,11 @@ pending repository.
     pending repository, and the nudge hook MUST NOT nudge it in that session.
   - **REQ-2.5** If the status word is `ask`, `build` or `no-cli`, the nudge hook MUST nudge
     the repository as REQ-3 states.
-  *Proof: T1, T2, T4, T6, T7 and T8.*
+  - **REQ-2.6** If probe P2 shows that the Skill payload does not name the skill, every
+    main-session Skill call MUST trigger the status check of REQ-2.2. This applies to pending
+    repositories only.
+  *Proof: T1, T2, T4, T6, T7 and T8. T1 and T2 use a payload without the skill name if P2
+  fails.*
   *Source: intent outcome paragraph 1 and the constraint on the expensive check. Decisions D2,
   D4 and the OQ1 ruling.*
 
@@ -223,7 +227,8 @@ privacy measure from the design decisions, not a policy skill.
 ## Open questions carried from intent
 
 - **Still open, answered by REQ-11.1 in plan task 1.** Whether the Skill tool's PostToolUse
-  payload names the skill (P2). If P1 or P3 fails, the build stops, and Nicolai decides.
+  payload names the skill (P2). If P2 fails, REQ-2.6 applies and the build continues. If P1
+  or P3 fails, the build stops, and Nicolai decides.
 - **Answered by REQ-1.1.** The create command list. A scaffolder run with `--disable-git`
   makes no `.git`, so REQ-1.3 marks nothing until the later `git init`. Extra create commands
   are harmless, because REQ-1.3 marks only a new repository.
@@ -250,6 +255,31 @@ Decisions of 2026-11-17 and 2026-11-18 that the requirements cite:
 - **D11.** The timing test measures CPU time.
 - **D12.** Nicolai starts the behaviour reruns. The PR test plan holds the post-merge check.
 - **D13.** The live probe covers P1, P2 and P3.
+- **D14.** If P2 fails, any Skill call triggers the check for pending repositories only.
+  Repositories that are not new are not affected, so the build continues.
+- **D-a.** REQ-1.1 adds `pnpm create`, `yarn create`, `bun create` and `cargo init`.
+- **D-b.** The call folder covers `git -C <path>`.
+- **D-c.** If P1 or P3 fails, the build stops and Nicolai decides.
+
+### Proof detail: T11 and T12
+
+**T11. The shape of the nudge record (REQ-6.1, REQ-6.2, REQ-6.4, REQ-6.5)**
+- Setup: in the main session, a pending repository with code gets a nudge.
+- The session log gets exactly one line with `"t": "nudge"`.
+- That line has the fields `ts`, `repo`, `trigger`, `via` and `word`.
+- `repo` is the repository ID, for example `middagsplan#3f9a1c07`.
+- `trigger` is `skill` or `commit`. `via` is `direct` or `marker`. `word` is the status word.
+- The line has no `path` field. No value in the line contains the full repository path.
+
+**T12. A path with a space and a quote, and the placeholder check (REQ-4.1, REQ-4.6)**
+- Setup A: the pending repository is at `<tmp>/my "odd" repo`. `shlex.split` of the command
+  in the nudge text gives exactly that path after `cd`, and the setup script path after `&&`.
+  The `additionalContext` JSON parses, and its text holds the same command.
+- Setup B: a copy of `setup-nudge.md` without `{{REPO}}`. The hook exits 0, prints nothing,
+  and the repository stays pending.
+- Setup C: a copy with `{{REPO}}` twice. The result is the same as in B.
+- Setup D: a copy without `{{GRAPHIFY_SETUP}}`, then a copy with it twice. The result is the
+  same as in B.
 
 The status check counts tracked source files with `git ls-files` and prints `small` under 20.
 A new repository therefore stays pending until the agent commits about 20 source files. For
