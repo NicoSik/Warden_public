@@ -84,7 +84,7 @@ Record the exact field names and one redacted example payload per call. If P1 or
 ~~~~
 **Setup check for a new repository.** This session created the repository in the command below, and it now has enough code for a code graph.
 skill: Run the setup check for it before the first code exploration in this skill:
-commit: Run the setup check for it before your next code exploration in that repository, or before you dispatch the next subagent into it, whatever skill is running:
+commit: Run the setup check for it before your next code exploration in that repository. Run it also before you dispatch the next subagent into it, whatever skill is running:
 
 ```bash
 cd {{REPO}} && {{GRAPHIFY_SETUP}} status
@@ -332,4 +332,13 @@ Ruled out:
 
 ## Probe results
 
-Not yet run. Task 1 writes this section.
+Run 2026-11-18 with Claude Code 2.1.327, `claude -p --settings <temp file> --model sonnet`, in a temporary folder outside every repository. `~/.claude/settings.json` was not edited. The temporary hook captured three PostToolUse payloads.
+
+| Probe | Result | Evidence |
+|---|---|---|
+| P1 `agent_id` | **Pass.** Present in the subagent call, absent in both main-session calls. The subagent call also has `agent_type` (`general-purpose`). | Main `echo main` and Skill payload keys: `cwd, duration_ms, effort, hook_event_name, permission_mode, prompt_id, session_id, tool_input, tool_name, tool_response, tool_use_id, transcript_path`. Subagent `echo sub` keys: the same plus `agent_id`, `agent_type`. |
+| P2 skill name | **Pass.** The field is `tool_input.skill`, with the namespace prefix: `superpowers:using-superpowers`. | Skill payload. |
+| P3 `session_id` | **Pass.** The subagent call has the main session's `session_id`. | All three payloads: the same `session_id`. |
+| Extra: `transcript_path` | The subagent call has the main session's `transcript_path`, so the session start is the same in subagent calls. | All three payloads: the same `transcript_path`. |
+
+Field names for Task 3: `agent_id` (subagent detection), `tool_input.skill` (strip the part up to and including `:`), `session_id`, `transcript_path`, `cwd`, `tool_input.command`, `tool_name`.
