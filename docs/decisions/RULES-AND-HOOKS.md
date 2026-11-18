@@ -18,8 +18,9 @@ prompt. `report` writes text back and changes nothing.
 | `plan-drift.sh` | Stop | Reports when the working tree touches files `plan.md` does not name. Guards its own re-entry so the report does not repeat on every Stop. | report | scrapped, not imported |
 | `config-drift.sh` | Stop | Reports when live `settings.json` drifts from its committed state, because Claude Code rewrites that file at runtime and a long session can revert it. | report | scrapped, not imported |
 | `ste-lint-spec.sh` | PostToolUse Write\|Edit | Lints spec and plan documents against the spec-language rules. Advisory. | report | scrapped, not imported |
+| `setup-nudge` | PostToolUse Bash\|Skill | Reminds the main agent once to run the setup check for a new repository. The repository needs 20 or more source files first. Silent for repositories older than the session. | report | **wired 2026-11** |
 
-Wired now: **two hooks, both secret guards.** Everything else is out.
+Wired now: **two secret guards, the default-branch guard, and the setup-check nudge.** Everything else is out.
 
 Two of the scrapped ones never blocked anything — `plan-drift.sh` and `config-drift.sh` only write
 text back. They are out anyway because both belong to the chain, and `config-drift.sh` assumes
