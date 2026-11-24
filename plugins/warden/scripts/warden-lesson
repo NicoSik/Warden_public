@@ -532,6 +532,7 @@ def _nudge_dir():
 
 def _git_parts(words):
     """For a git command, return (subcommand, path given to -C). Returns (None, None) for anything else."""
+    words = _unwrap(words)
     if not words or _base(words[0]) != "git":
         return None, None
     path, i = None, 1
@@ -596,6 +597,7 @@ def _birth(path):
 
 
 def _is_create(words):
+    words = _unwrap(words)
     sub, _ = _git_parts(words)
     if sub in ("init", "clone"):
         return True
@@ -691,8 +693,13 @@ def _write_state(d, sid, state):
             continue
         try:
             fp = os.path.join(d, name)
-            if os.path.isfile(fp) and os.stat(fp).st_mtime < cutoff:
-                os.remove(fp)
+            if not (os.path.isfile(fp) and os.stat(fp).st_mtime < cutoff):
+                continue
+            if name.endswith(".lock"):
+                js = os.path.join(d, name[:-5] + ".json")
+                if os.path.exists(js) and os.stat(js).st_mtime >= cutoff:
+                    continue
+            os.remove(fp)
         except OSError:
             pass
 
@@ -713,6 +720,7 @@ def _nudge(args):
 
 
 def _nudge_run():
+    deadline = time.monotonic() + NUDGE_BUDGET
     p = json.loads(sys.stdin.read())
     if not isinstance(p, dict):
         return ""
@@ -747,12 +755,21 @@ def _nudge_run():
     has_marker = (not sub) and os.path.exists(os.path.join(d, sid + ".ready"))
     if not (creates or commit_dirs or skill or has_marker):
         return ""
+    if not (creates or has_marker or os.path.exists(os.path.join(d, sid + ".json"))):
+        return ""
     template = None if sub else _load_template(root)
 
     os.makedirs(d, mode=0o700, exist_ok=True)
     os.chmod(d, 0o700)
     with open(os.path.join(d, sid + ".lock"), "a") as lockf:
-        fcntl.flock(lockf, fcntl.LOCK_EX)
+        while True:
+            try:
+                fcntl.flock(lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    return ""
+                time.sleep(0.05)
         state0 = _read_json(os.path.join(d, sid + ".json"), {})
         pending = state0.get("pending") if isinstance(state0.get("pending"), dict) else {}
         nudged = state0.get("nudged") if isinstance(state0.get("nudged"), list) else []
@@ -772,6 +789,9 @@ def _nudge_run():
                     pass
                 found = []
                 for c in cands:
+                    if time.monotonic() >= deadline:
+                        found = [(None, None)]
+                        break
                     info = _repo_info(c)
                     if info:
                         found.append((info, _birth(os.path.join(info[1], ".git"))))
@@ -792,11 +812,10 @@ def _nudge_run():
                 if i not in checks:
                     checks.append(i)
         due = {}
-        begin = time.monotonic()
         for i in checks:
             if i in queued or i not in pending:
                 continue
-            left = NUDGE_BUDGET - (time.monotonic() - begin)
+            left = deadline - time.monotonic()
             if left <= 0:
                 break
             word = _status_word(setup, pending[i], min(NUDGE_STATUS_TIMEOUT, left))
@@ -840,7 +859,7 @@ def _nudge_run():
                 pending.pop(i, None)
                 nudged.append(i)
         state = {"pending": pending, "nudged": nudged, "dropped": dropped}
-        if state != before or not os.path.exists(os.path.join(d, sid + ".json")):
+        if state != before:
             _write_state(d, sid, state)
         return out
 

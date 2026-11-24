@@ -145,7 +145,7 @@ run Bash "$R" "git commit -m x"
 expect_empty "T3 commit in an older repository prints nothing"
 run Skill "$R" "writing-plans"
 expect_empty "T3 Skill payload in an older repository prints nothing"
-[ "$(state_len pending)" = 0 ] && pass "T3 nothing is pending" || fail "T3 pending count is $(state_len pending)"
+case "$(state_len pending)" in 0|missing) pass "T3 nothing is pending" ;; *) fail "T3 pending count is $(state_len pending)" ;; esac
 
 # T4. The commit trigger.
 new_session
@@ -201,7 +201,7 @@ expect_empty "T7 ready: commit prints nothing"
 # T8. No graphify on PATH gives no-cli, and the commit nudges.
 new_session
 if PATH="$SAFE_PATH" command -v graphify >/dev/null 2>&1; then
-  pass "T8 skipped: a graphify sits in the system path"
+  printf '  SKIP T8 a graphify sits in the system path, so no-cli cannot be tested\n'
 else
   export PATH="$SAFE_PATH"
   R="$W/repo"; mkrepo "$R"; add_files "$R" 20
@@ -354,8 +354,53 @@ real = wl._birth
 wl._birth = lambda p: None if p.endswith("/b/.git") else real(p)
 sys.stdin = io.StringIO(sys.argv[2])
 wl._nudge_run()' "$SCRIPT" "$PAYLOAD"
-[ "$(state_len pending)" = 0 ] && pass "T21 one missing .git birthtime marks no repository" || fail "T21 pending count is $(state_len pending)"
+case "$(state_len pending)" in 0|missing) pass "T21 one missing .git birthtime marks no repository" ;; *) fail "T21 pending count is $(state_len pending)" ;; esac
 run Bash "$P" "git init"
 [ "$(state_len pending)" = 2 ] && pass "T21 with birthtimes available both are marked" || fail "T21 control pending count is $(state_len pending)"
+
+# T22. A held lock never makes the run exceed the hook timeout (REQ-9.1, REQ-9.3).
+new_session
+R="$W/repo"; mkrepo "$R"; add_files "$R" 20
+run Bash "$R" "git init"
+python3 -I -c 'import fcntl,sys,time
+f=open(sys.argv[1],"a"); fcntl.flock(f,fcntl.LOCK_EX); print("held",flush=True); time.sleep(6)' "$ND/$SID.lock" > "$W/held" &
+HOLDER=$!
+while [ ! -s "$W/held" ]; do sleep 0.05; done
+T0=$(python3 -I -c 'import time; print(time.time())')
+run Bash "$R" "git commit -m x"
+T1=$(python3 -I -c 'import time; print(time.time())')
+expect_empty "T22 a run behind a held lock prints nothing"
+python3 -I -c 'import sys; sys.exit(0 if float(sys.argv[2]) - float(sys.argv[1]) < 5 else 1)' "$T0" "$T1" && pass "T22 the run ends within 5 seconds" || fail "T22 the run took too long"
+[ "$(state_len pending)" = 1 ] && pass "T22 the repository stays pending" || fail "T22 pending count is $(state_len pending)"
+kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null
+
+# T23. A lock outlives its state file's cleanup window only with the state file (REQ-7.2, REQ-7.3).
+new_session
+mkdir -p "$ND"
+for f in fresh.lock fresh.json stale.lock stale.json; do : > "$ND/$f"; done
+python3 -I -c 'import os,sys,time
+t=time.time()-8*86400
+for f in sys.argv[2:]: os.utime(os.path.join(sys.argv[1],f),(t,t))' "$ND" fresh.lock stale.lock stale.json
+R="$W/repo"; mkrepo "$R"
+run Bash "$R" "git init"
+if [ -e "$ND/fresh.lock" ] && [ -e "$ND/fresh.json" ]; then pass "T23 an old lock beside a fresh state file stays"; else fail "T23 the lock was removed: $(ls "$ND")"; fi
+if [ ! -e "$ND/stale.lock" ] && [ ! -e "$ND/stale.json" ]; then pass "T23 an old lock beside an old state file is removed"; else fail "T23 stale files stay: $(ls "$ND")"; fi
+
+# T24. Wrapped commands count (REQ-1.1, REQ-2.1).
+new_session
+R="$W/repo"; mkrepo "$R"
+run Bash "$R" "env X=1 git init"
+[ "$(state_len pending)" = 1 ] && pass "T24 env X=1 git init marks the repository" || fail "T24 pending count is $(state_len pending)"
+add_files "$R" 20
+run Bash "$R" "timeout 60 git commit -m x"
+expect_nudge "T24 timeout 60 git commit nudges" commit
+
+# T25. No state file and nothing to mark: no state file, no lock (REQ-10 gate).
+new_session
+R="$W/repo"; mkrepo "$R"; add_files "$R" 20
+sleep 0.05; rm -f "$TRANSCRIPT"; : > "$TRANSCRIPT"
+run Bash "$R" "git commit -m x"
+run Skill "$R" "superpowers:writing-plans"
+if [ ! -e "$ND/$SID.json" ] && [ ! -e "$ND/$SID.lock" ]; then pass "T25 no state file and no lock"; else fail "T25 stray files: $(ls "$ND")"; fi
 
 harness_exit
