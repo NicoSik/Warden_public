@@ -31,6 +31,7 @@ own proof. The change is still one subsystem.
   nudge or drop.
 - **The call folder** is the path of a leading `cd <path> &&` in the command, if the command
   has one. Otherwise it is the payload's `cwd`. For a `git -C <path>` command, it is `<path>`.
+  A relative `<path>` resolves against the payload's `cwd`.
 - **The four skills** are brainstorming, writing-specs, writing-plans and systematic-debugging.
 - **The marker** is the per-session file that holds a nudge which waits for delivery.
 - **The session log** is the lesson-capture file `<inbox>/sessions/<session_id>.jsonl`.
@@ -135,7 +136,12 @@ nudge with a later setup call.
   - **REQ-6.5** A record MUST NOT contain a filesystem path or any command text.
   - **REQ-6.6** If lesson capture is off, the nudge hook MUST write no record and MUST still
     deliver nudges.
-  *Proof: T10, T11 and T18.*
+  - **REQ-6.7** If a session log holds a `nudge` line, `warden-lesson report` MUST print a
+    "Nudges:" section after the lessons. Each row MUST show the date, the repository ID, the
+    trigger, the `via` value, the word, and `setup-call` or `no setup-call`. A row shows
+    `setup-call` when the same session log holds a later `setup-call` line for the same
+    repository ID. Without a `nudge` line, the report MUST NOT print the section.
+  *Proof: T10, T11 and T18. The four Nudges tests in `tests/warden_lessons.sh`.*
   *Source: intent measure "a nudge line in the lesson session file". Decisions D6 and D7.*
 
 **REQ-7** The nudge hook MUST keep its per-session state outside the lesson inbox.
@@ -172,12 +178,21 @@ PostToolUse command hook.
   *Proof: T14 and T17.*
   *Source: intent constraint "a slow or failed check exits silently". Decision D9.*
 
-**REQ-10** A Bash or Skill call with no trigger MUST cost the nudge hook no Python and no git.
-  - **REQ-10.1** The median CPU time (user + sys) of 20 runs on a payload with no trigger
-    MUST be under 20 ms.
+**REQ-10** The nudge hook MUST start Python only for a call that can change its state or
+its output. Every other Bash or Skill call MUST cost it no Python and no git.
+  - **REQ-10.1** The median CPU time (user + sys) of 20 runs on a payload that the prefilter
+    does not hand off MUST be under 20 ms. This holds for a Bash payload and for a Skill
+    payload in a session without state.
   - **REQ-10.2** The median CPU time of 20 runs on a `git commit` payload in a repository that
     is not pending MUST be under 100 ms.
-  *Proof: the timing test in `tests/warden_setup_nudge.sh`, which measures `RUSAGE_CHILDREN`.*
+  - **REQ-10.3** The prefilter MUST hand off a create command or a run of the setup script in
+    every session. Only the part of the payload before `tool_response` counts.
+  - **REQ-10.4** The prefilter MUST hand off a Skill call, a `git commit` call or a `git -C`
+    call only when the session's state file exists.
+  - **REQ-10.5** The prefilter MUST hand off a main-session call when the marker exists.
+  - **REQ-10.6** A session with no pending repository MUST NOT get a state file.
+  *Proof: the timing and hand-off tests in `tests/warden_nudge_fastpath.sh`, which measure
+  `RUSAGE_CHILDREN`. The no-state test in `tests/warden_setup_nudge.sh`.*
   *Source: intent constraint "ordinary Bash calls stay cheap. A timing test covers this."
   Decision D11.*
 
@@ -284,3 +299,12 @@ Decisions of 2026-11-17 and 2026-11-18 that the requirements cite:
 The status check counts tracked source files with `git ls-files` and prints `small` under 20.
 A new repository therefore stays pending until the agent commits about 20 source files. For
 this reason, the commit is the re-check trigger.
+
+## Reconciled 2026-11-24
+
+- REQ-9.1, REQ-9.3. The build first took the state lock with a blocking call outside the run budget. Ruling: the code was wrong. Fixed in `bab2a98` and `d2dd366`: the lock wait and each `git rev-parse` run now end at the 4-second run deadline.
+- REQ-7.2, REQ-7.3. The cleanup also removed lock files of live sessions. Ruling: the code was wrong. Fixed in `bab2a98`: a lock file goes only with an old or absent state file.
+- REQ-1.1, REQ-2.1. The build did not detect wrapped commands such as `timeout 60 git commit`. Ruling: the code was wrong. Fixed in `bab2a98`.
+- REQ-10. The spec promised no Python for every call without a trigger. The build started Python for every Skill, `git commit` and `git -C` call. Ruling: the spec was wrong, plus one code change. REQ-10 now gates those calls on the state file (REQ-10.4), and REQ-10.6 forbids a state file in a session with nothing pending. Fixed in `108296a` and `33f49dc`.
+- REQ-6.7. The build added a "Nudges:" section to `warden-lesson report`. Ruling: the spec was wrong. REQ-6.7 now describes the section.
+- Terms, the call folder. The spec did not say how a relative `git -C` path resolves. Ruling: the spec was wrong. A relative path resolves against the payload's `cwd`.
