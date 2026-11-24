@@ -315,4 +315,47 @@ expect_nudge "T18 commit still nudges with WARDEN_LESSON_OFF=1" commit
 assert_absent "$LOG"
 unset WARDEN_LESSON_OFF
 
+# T19. A worktree has the repository ID of its main checkout.
+new_session
+R="$W/repo"; mkrepo "$R"; add_files "$R" 20
+run Bash "$R" "git init"
+git -C "$R" worktree add -q "$W/wt" -b side 2>/dev/null
+run Bash "$W/wt" "\"$SETUP\" status"
+run Bash "$R" "\"$SETUP\" status"
+run Bash "$W/wt" "git commit -m x"
+expect_nudge "T19 a commit in a worktree of a pending repository nudges" commit
+if python3 -I -c 'import json,sys
+rows=[json.loads(l) for l in open(sys.argv[1])]
+s=[r["repo"] for r in rows if r["t"]=="setup-call"]
+n=[r["repo"] for r in rows if r["t"]=="nudge"]
+assert len(s)==2 and len(n)==1 and s[0]==s[1]==n[0], rows' "$LOG"; then pass "T19 setup-call from the worktree pairs with the nudge"; else fail "T19 IDs differ: $(cat "$LOG")"; fi
+
+# T20. The lock keeps parallel state writes whole (REQ-7.2).
+new_session
+for i in 1 2 3 4 5 6 7 8; do mkrepo "$W/r$i"; done
+for i in 1 2 3 4 5 6 7 8; do
+  pl Bash "$W/r$i" "git init" | python3 -I "$SCRIPT" nudge > /dev/null 2>&1 &
+done
+wait
+[ "$(state_len pending)" = 8 ] && pass "T20 eight parallel git init payloads leave eight pending" || fail "T20 pending count is $(state_len pending)"
+
+# T21. A .git creation time that is not available marks nothing for the call (REQ-1.5).
+new_session
+P="$W/parent"; mkdir "$P"; mkrepo "$P/a"; mkrepo "$P/b"
+PAYLOAD=$(pl Bash "$P" "git init")
+python3 -I -c '
+import sys, io, importlib.machinery, importlib.util
+sys.dont_write_bytecode = True
+loader = importlib.machinery.SourceFileLoader("wl", sys.argv[1])
+spec = importlib.util.spec_from_loader("wl", loader)
+wl = importlib.util.module_from_spec(spec)
+loader.exec_module(wl)
+real = wl._birth
+wl._birth = lambda p: None if p.endswith("/b/.git") else real(p)
+sys.stdin = io.StringIO(sys.argv[2])
+wl._nudge_run()' "$SCRIPT" "$PAYLOAD"
+[ "$(state_len pending)" = 0 ] && pass "T21 one missing .git birthtime marks no repository" || fail "T21 pending count is $(state_len pending)"
+run Bash "$P" "git init"
+[ "$(state_len pending)" = 2 ] && pass "T21 with birthtimes available both are marked" || fail "T21 control pending count is $(state_len pending)"
+
 harness_exit

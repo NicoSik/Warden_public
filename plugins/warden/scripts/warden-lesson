@@ -580,7 +580,10 @@ def _repo_info(folder):
             return None
         common = os.path.realpath(lines[0])
         top = os.path.realpath(lines[1])
-        return os.path.basename(top) + "#" + hashlib.sha256(common.encode()).hexdigest()[:8], top
+        name = os.path.basename(common)
+        if name == ".git":
+            name = os.path.basename(os.path.dirname(common))
+        return name + "#" + hashlib.sha256(common.encode()).hexdigest()[:8], top
     except Exception:
         return None
 
@@ -767,13 +770,15 @@ def _nudge_run():
                               if os.path.exists(os.path.join(folder, n, ".git"))]
                 except OSError:
                     pass
+                found = []
                 for c in cands:
                     info = _repo_info(c)
-                    if not info or info[0] in nudged or info[0] in dropped:
-                        continue
-                    born = _birth(os.path.join(info[1], ".git"))
-                    if born is not None and born > start:
-                        pending[info[0]] = info[1]
+                    if info:
+                        found.append((info, _birth(os.path.join(info[1], ".git"))))
+                if all(b is not None for _, b in found):
+                    for info, born in found:
+                        if info[0] not in nudged and info[0] not in dropped and born > start:
+                            pending[info[0]] = info[1]
 
         checks, trigger_of = [], {}
         for c in commit_dirs:
