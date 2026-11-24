@@ -740,7 +740,7 @@ def _nudge_run():
     folder = _call_folder(chain, cwd)
 
     if any(_runs_setup(w) for w, _ in chain):
-        info = _repo_info(folder)
+        info = _repo_info(folder) if deadline - time.monotonic() >= 1 else None
         if info:
             write_line(log, {"t": "setup-call", "ts": _now(), "repo": info[0]})
 
@@ -789,7 +789,7 @@ def _nudge_run():
                     pass
                 found = []
                 for c in cands:
-                    if time.monotonic() >= deadline:
+                    if deadline - time.monotonic() < 1:
                         found = [(None, None)]
                         break
                     info = _repo_info(c)
@@ -802,6 +802,8 @@ def _nudge_run():
 
         checks, trigger_of = [], {}
         for c in commit_dirs:
+            if deadline - time.monotonic() < 1:
+                break
             info = _repo_info(c)
             if info and info[0] in pending and info[0] not in checks:
                 checks.append(info[0])

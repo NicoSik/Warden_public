@@ -145,7 +145,7 @@ run Bash "$R" "git commit -m x"
 expect_empty "T3 commit in an older repository prints nothing"
 run Skill "$R" "writing-plans"
 expect_empty "T3 Skill payload in an older repository prints nothing"
-case "$(state_len pending)" in 0|missing) pass "T3 nothing is pending" ;; *) fail "T3 pending count is $(state_len pending)" ;; esac
+[ "$(state_len pending)" = missing ] && pass "T3 no state file is written" || fail "T3 state is $(state_len pending)"
 
 # T4. The commit trigger.
 new_session
@@ -353,8 +353,8 @@ loader.exec_module(wl)
 real = wl._birth
 wl._birth = lambda p: None if p.endswith("/b/.git") else real(p)
 sys.stdin = io.StringIO(sys.argv[2])
-wl._nudge_run()' "$SCRIPT" "$PAYLOAD"
-case "$(state_len pending)" in 0|missing) pass "T21 one missing .git birthtime marks no repository" ;; *) fail "T21 pending count is $(state_len pending)" ;; esac
+wl._nudge_run()' "$SCRIPT" "$PAYLOAD" || fail "T21 the call crashed"
+[ "$(state_len pending)" = missing ] && pass "T21 one missing .git birthtime marks no repository" || fail "T21 state is $(state_len pending)"
 run Bash "$P" "git init"
 [ "$(state_len pending)" = 2 ] && pass "T21 with birthtimes available both are marked" || fail "T21 control pending count is $(state_len pending)"
 
@@ -402,5 +402,54 @@ sleep 0.05; rm -f "$TRANSCRIPT"; : > "$TRANSCRIPT"
 run Bash "$R" "git commit -m x"
 run Skill "$R" "superpowers:writing-plans"
 if [ ! -e "$ND/$SID.json" ] && [ ! -e "$ND/$SID.lock" ]; then pass "T25 no state file and no lock"; else fail "T25 stray files: $(ls "$ND")"; fi
+
+# T26. A later create call keeps nudged and dropped repositories out of pending (F2).
+state_ids() { python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1]))[sys.argv[2]]; print(" ".join(sorted(d)))' "$ND/$SID.json" "$1" 2>/dev/null; }
+new_session
+P="$W/parent"; mkdir "$P"; mkrepo "$P/a"; add_files "$P/a" 20
+run Bash "$P" "git init a"
+run Bash "$P/a" "git commit -m x"
+expect_nudge "T26 A is nudged" commit
+mkrepo "$P/b"
+run Bash "$P" "git init b"
+case "$(state_ids pending)" in b#*) pass "T26 only B is pending" ;; *) fail "T26 pending is '$(state_ids pending)'" ;; esac
+case "$(state_ids nudged)" in a#*) pass "T26 A stays nudged" ;; *) fail "T26 nudged is '$(state_ids nudged)'" ;; esac
+run Skill "$P" "writing-plans"
+expect_empty "T26 a Skill payload does not nudge A again (B is small)"
+run Bash "$P/a" "git commit -m again"
+expect_empty "T26 a commit in A does not nudge again"
+new_session
+P="$W/parent"; mkdir "$P"; mkrepo "$P/a"; add_files "$P/a" 20
+run Bash "$P" "git init a"
+(cd "$P/a" && "$SETUP" decline >/dev/null)
+run Skill "$P" "writing-plans"
+mkrepo "$P/b"
+run Bash "$P" "git init b"
+case "$(state_ids pending)" in b#*) pass "T26 dropped: only B is pending" ;; *) fail "T26 pending is '$(state_ids pending)'" ;; esac
+case "$(state_ids dropped)" in a#*) pass "T26 A stays dropped" ;; *) fail "T26 dropped is '$(state_ids dropped)'" ;; esac
+
+# T27. Git calls that do not fit the run deadline are skipped (F4).
+new_session
+FAKE="$W/fakebin"; mkdir "$FAKE"
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = rev-parse ] && sleep 2; done\nexec %s/git "$@"\n' "$GITDIR_BIN" > "$FAKE/git"; chmod +x "$FAKE/git"
+R="$W/repo"; mkrepo "$R"; add_files "$R" 20
+run Bash "$R" "git init"
+slow_run() { # CWD COMMAND: run behind a lock held for 3.8 s, with a slow rev-parse
+  python3 -I -c 'import fcntl,sys,time
+f=open(sys.argv[1],"a"); fcntl.flock(f,fcntl.LOCK_EX); print("held",flush=True); time.sleep(3.8)' "$ND/$SID.lock" > "$W/held" &
+  HOLDER=$!
+  while [ ! -s "$W/held" ]; do sleep 0.05; done
+  T0=$(python3 -I -c 'import time; print(time.time())')
+  OUT=$(pl Bash "$1" "$2" | PATH="$FAKE:$PATH" python3 -I "$SCRIPT" nudge 2>/dev/null); RC=$?
+  T1=$(python3 -I -c 'import time; print(time.time())')
+  wait "$HOLDER" 2>/dev/null; rm -f "$W/held"
+}
+slow_run "$R" "git commit -m x"
+expect_empty "T27 commit behind a lock and a slow rev-parse prints nothing"
+python3 -I -c 'import sys; sys.exit(0 if float(sys.argv[2]) - float(sys.argv[1]) < 4.3 else 1)' "$T0" "$T1" && pass "T27 the commit run ends within the 4 second budget" || fail "T27 the commit run took too long"
+slow_run "$R" "\"$SETUP\" status && git commit -m x"
+expect_empty "T27 setup-call and commit behind a lock print nothing"
+python3 -I -c 'import sys; sys.exit(0 if float(sys.argv[2]) - float(sys.argv[1]) < 4.3 else 1)' "$T0" "$T1" && pass "T27 the combined run ends within the 4 second budget" || fail "T27 the combined run took too long"
+[ "$(state_len pending)" = 1 ] && pass "T27 the repository stays pending" || fail "T27 pending count is $(state_len pending)"
 
 harness_exit
