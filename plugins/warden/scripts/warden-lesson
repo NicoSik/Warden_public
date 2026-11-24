@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """warden-lesson: a lesson inbox outside every repository.
 
-Modes: hook, add, list, status. This file holds the store, the secret scrub, retention and the hook.
+Modes: hook, nudge, add, list, status. This file holds the store, the secret scrub, retention and the hook.
 """
 import datetime
+import fcntl
 import hashlib
 import json
 import os
@@ -11,6 +12,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 
 sys.dont_write_bytecode = True
 
@@ -516,6 +518,328 @@ def _hook(args):
     return 0
 
 
+NUDGE_DAYS = 7
+NUDGE_BUDGET = 4.0
+NUDGE_STATUS_TIMEOUT = 3.0
+NUDGE_SKILLS = frozenset({"brainstorming", "writing-specs", "writing-plans", "systematic-debugging"})
+NUDGE_CREATE = (("npm", "create"), ("pnpm", "create"), ("yarn", "create"), ("bun", "create"),
+                ("cargo", "new"), ("cargo", "init"), ("uv", "init"))
+
+
+def _nudge_dir():
+    return os.path.join(os.path.expanduser("~"), ".claude", "warden", "nudge")
+
+
+def _git_parts(words):
+    """For a git command, return (subcommand, path given to -C). Returns (None, None) for anything else."""
+    if not words or _base(words[0]) != "git":
+        return None, None
+    path, i = None, 1
+    while i < len(words):
+        w = words[i]
+        if w == "-C" and i + 1 < len(words):
+            path = words[i + 1]
+            i += 2
+        elif w == "-c" and i + 1 < len(words):
+            i += 2
+        elif w.startswith("-"):
+            i += 1
+        else:
+            return w, path
+    return None, path
+
+
+def _resolve(path, base):
+    path = os.path.expanduser(path)
+    return os.path.normpath(path if os.path.isabs(path) else os.path.join(base, path))
+
+
+def _call_folder(chain, cwd):
+    """The folder a command runs in: a leading cd, else the first git -C, else cwd."""
+    if chain:
+        words, op = chain[0]
+        if words[0] == "cd" and len(words) >= 2 and op == "&&":
+            return _resolve(words[1], cwd)
+        for words, _ in chain:
+            _sub, path = _git_parts(words)
+            if path:
+                return _resolve(path, cwd)
+    return cwd
+
+
+def _repo_info(folder):
+    """Return (id, toplevel) for the repository that holds folder, or None."""
+    try:
+        if not folder or not os.path.isdir(folder):
+            return None
+        r = subprocess.run(["git", "-C", folder, "rev-parse", "--path-format=absolute", "--git-common-dir",
+                            "--show-toplevel"], capture_output=True, text=True, timeout=1,
+                           stdin=subprocess.DEVNULL)
+        lines = r.stdout.splitlines()
+        if r.returncode != 0 or len(lines) < 2:
+            return None
+        common = os.path.realpath(lines[0])
+        top = os.path.realpath(lines[1])
+        return os.path.basename(top) + "#" + hashlib.sha256(common.encode()).hexdigest()[:8], top
+    except Exception:
+        return None
+
+
+def _birth(path):
+    try:
+        return os.stat(path).st_birthtime
+    except Exception:
+        return None
+
+
+def _is_create(words):
+    sub, _ = _git_parts(words)
+    if sub in ("init", "clone"):
+        return True
+    if not words:
+        return False
+    name = _base(words[0])
+    if name.startswith("create-") and name != "create-":
+        return True
+    if len(words) >= 2 and (name, words[1]) in NUDGE_CREATE:
+        return True
+    if name == "npx":
+        rest = [w for w in words[1:] if not w.startswith("-")]
+        return bool(rest) and rest[0].startswith("create-")
+    return False
+
+
+def _runs_setup(words):
+    if not words:
+        return False
+    if _base(words[0]) == "graphify-setup":
+        return True
+    return words[0] in SHELLS and len(words) > 1 and _base(words[1]) == "graphify-setup"
+
+
+def _skill_triggers(tool_input):
+    name = tool_input.get("skill")
+    if not isinstance(name, str) or not name:
+        return True
+    return name.rsplit(":", 1)[-1] in NUDGE_SKILLS
+
+
+def _load_template(root):
+    try:
+        with open(os.path.join(root, "hooks", "setup-nudge.md"), encoding="utf-8") as f:
+            text = f.read()
+    except Exception:
+        return None
+    if text.count("{{REPO}}") != 1 or text.count("{{GRAPHIFY_SETUP}}") != 1:
+        return None
+    return text
+
+
+def _render(template, variant, top, setup):
+    lines = []
+    for ln in template.split("\n"):
+        m = re.match(r"(skill|commit): ", ln)
+        if m:
+            if m.group(1) != variant:
+                continue
+            ln = ln[m.end():]
+        lines.append(ln)
+    vals = {"{{REPO}}": shlex.quote(top), "{{GRAPHIFY_SETUP}}": shlex.quote(setup)}
+    return re.sub(r"\{\{REPO\}\}|\{\{GRAPHIFY_SETUP\}\}", lambda m: vals[m.group(0)], "\n".join(lines)).strip("\n")
+
+
+def _status_word(setup, top, timeout):
+    proc = None
+    try:
+        proc = subprocess.Popen([setup, "status"], cwd=top, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                stdin=subprocess.DEVNULL, text=True, start_new_session=True)
+        out, _ = proc.communicate(timeout=timeout)
+        return out.strip()
+    except BaseException:
+        if proc is not None:
+            try:
+                os.killpg(proc.pid, 9)
+            except Exception:
+                pass
+            try:
+                proc.communicate(timeout=1)
+            except Exception:
+                pass
+        return None
+
+
+def _read_json(path, default):
+    try:
+        with open(path, encoding="utf-8") as f:
+            v = json.load(f)
+        return v if isinstance(v, type(default)) else default
+    except Exception:
+        return default
+
+
+def _write_state(d, sid, state):
+    tmp = os.path.join(d, "%s.json.tmp%d" % (sid, os.getpid()))
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(state, f)
+    os.replace(tmp, os.path.join(d, sid + ".json"))
+    cutoff = time.time() - NUDGE_DAYS * 86400
+    for name in os.listdir(d):
+        if name == sid + ".lock":
+            continue
+        try:
+            fp = os.path.join(d, name)
+            if os.path.isfile(fp) and os.stat(fp).st_mtime < cutoff:
+                os.remove(fp)
+        except OSError:
+            pass
+
+
+def _nudge(args):
+    out = ""
+    try:
+        out = _nudge_run()
+    except BaseException:
+        out = ""
+    try:
+        if out:
+            sys.stdout.write(out)
+            sys.stdout.flush()
+    except BaseException:
+        pass
+    return 0
+
+
+def _nudge_run():
+    p = json.loads(sys.stdin.read())
+    if not isinstance(p, dict):
+        return ""
+    sid = re.sub(r"[^A-Za-z0-9_-]", "", str(p.get("session_id") or ""))
+    if not sid:
+        return ""
+    sub = "agent_id" in p
+    tool = p.get("tool_name")
+    tool_input = p.get("tool_input") if isinstance(p.get("tool_input"), dict) else {}
+    cwd = p.get("cwd") if isinstance(p.get("cwd"), str) and p.get("cwd") else os.getcwd()
+    command = tool_input.get("command") if tool == "Bash" else ""
+    command = command if isinstance(command, str) else ""
+    chain = (parse_chain(command) if command else []) or []
+    root = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    setup = os.path.join(root, "scripts", "graphify-setup")
+    log = os.path.join(inbox(), "sessions", sid + ".jsonl")
+    folder = _call_folder(chain, cwd)
+
+    if any(_runs_setup(w) for w, _ in chain):
+        info = _repo_info(folder)
+        if info:
+            write_line(log, {"t": "setup-call", "ts": _now(), "repo": info[0]})
+
+    creates = any(_is_create(w) for w, _ in chain)
+    commit_dirs = []
+    for w, _ in chain:
+        s, path = _git_parts(w)
+        if s == "commit":
+            commit_dirs.append(_resolve(path, cwd) if path else folder)
+    skill = (not sub) and tool == "Skill" and _skill_triggers(tool_input)
+    d = _nudge_dir()
+    has_marker = (not sub) and os.path.exists(os.path.join(d, sid + ".ready"))
+    if not (creates or commit_dirs or skill or has_marker):
+        return ""
+    template = None if sub else _load_template(root)
+
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    os.chmod(d, 0o700)
+    with open(os.path.join(d, sid + ".lock"), "a") as lockf:
+        fcntl.flock(lockf, fcntl.LOCK_EX)
+        state0 = _read_json(os.path.join(d, sid + ".json"), {})
+        pending = state0.get("pending") if isinstance(state0.get("pending"), dict) else {}
+        nudged = state0.get("nudged") if isinstance(state0.get("nudged"), list) else []
+        dropped = state0.get("dropped") if isinstance(state0.get("dropped"), list) else []
+        before = {"pending": dict(pending), "nudged": list(nudged), "dropped": list(dropped)}
+        ready_path = os.path.join(d, sid + ".ready")
+        queued = _read_json(ready_path, {})
+
+        if creates:
+            start = _birth(p.get("transcript_path")) if isinstance(p.get("transcript_path"), str) else None
+            if start is not None:
+                cands = [folder]
+                try:
+                    cands += [os.path.join(folder, n) for n in sorted(os.listdir(folder))
+                              if os.path.exists(os.path.join(folder, n, ".git"))]
+                except OSError:
+                    pass
+                for c in cands:
+                    info = _repo_info(c)
+                    if not info or info[0] in nudged or info[0] in dropped:
+                        continue
+                    born = _birth(os.path.join(info[1], ".git"))
+                    if born is not None and born > start:
+                        pending[info[0]] = info[1]
+
+        checks, trigger_of = [], {}
+        for c in commit_dirs:
+            info = _repo_info(c)
+            if info and info[0] in pending and info[0] not in checks:
+                checks.append(info[0])
+                trigger_of[info[0]] = "commit"
+        if skill:
+            for i in pending:
+                trigger_of[i] = "skill"
+                if i not in checks:
+                    checks.append(i)
+        due = {}
+        begin = time.monotonic()
+        for i in checks:
+            if i in queued or i not in pending:
+                continue
+            left = NUDGE_BUDGET - (time.monotonic() - begin)
+            if left <= 0:
+                break
+            word = _status_word(setup, pending[i], min(NUDGE_STATUS_TIMEOUT, left))
+            if word in ("ready", "declined"):
+                pending.pop(i, None)
+                dropped.append(i)
+            elif word in ("ask", "build", "no-cli"):
+                due[i] = word
+
+        items = []
+        if sub:
+            if due:
+                queued.update(due)
+                fd = os.open(ready_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w") as f:
+                    json.dump(queued, f)
+        elif template is not None:
+            for i, word in due.items():
+                items.append((i, word, trigger_of.get(i, "commit"), "direct"))
+            claimed = os.path.join(d, "%s.claimed.%d" % (sid, os.getpid()))
+            try:
+                os.rename(ready_path, claimed)
+            except OSError:
+                claimed = None
+            if claimed:
+                for i, word in _read_json(claimed, {}).items():
+                    if i in pending and i not in due:
+                        items.append((i, str(word), "commit", "marker"))
+                try:
+                    os.remove(claimed)
+                except OSError:
+                    pass
+
+        out = ""
+        if items:
+            blocks = [_render(template, t, pending[i], setup) for i, _, t, _ in items]
+            out = json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse",
+                                                     "additionalContext": "\n\n".join(blocks)}})
+            for i, word, t, via in items:
+                write_line(log, {"t": "nudge", "ts": _now(), "repo": i, "trigger": t, "via": via, "word": word})
+                pending.pop(i, None)
+                nudged.append(i)
+        state = {"pending": pending, "nudged": nudged, "dropped": dropped}
+        if state != before or not os.path.exists(os.path.join(d, sid + ".json")):
+            _write_state(d, sid, state)
+        return out
+
+
 def _add(args):
     text = " ".join(args.text).strip()
     if not text:
@@ -729,6 +1053,7 @@ def main(argv=None):
     pr.set_defaults(func=_report)
     sub.add_parser("status").set_defaults(func=_status)
     sub.add_parser("hook").set_defaults(func=_hook)
+    sub.add_parser("nudge").set_defaults(func=_nudge)
     args, _ = parser.parse_known_args(argv)
     return args.func(args)
 
