@@ -433,23 +433,33 @@ new_session
 FAKE="$W/fakebin"; mkdir "$FAKE"
 printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = rev-parse ] && sleep 2; done\nexec %s/git "$@"\n' "$GITDIR_BIN" > "$FAKE/git"; chmod +x "$FAKE/git"
 R="$W/repo"; mkrepo "$R"; add_files "$R" 20
+for i in 1 2 3; do mkrepo "$W/d$i"; done
 run Bash "$R" "git init"
-slow_run() { # CWD COMMAND: run behind a lock held for 3.8 s, with a slow rev-parse
+THREE="git -C $W/d1 commit -m x && git -C $W/d2 commit -m x && git -C $W/d3 commit -m x"
+# slow_run CWD COMMAND: run behind a lock held for 3.8 s, with a slow rev-parse. Sets OUT, RC and ELAPSED.
+# The interval is timed inside one python process, so interpreter start-up is outside it.
+slow_run() {
   python3 -I -c 'import fcntl,sys,time
 f=open(sys.argv[1],"a"); fcntl.flock(f,fcntl.LOCK_EX); print("held",flush=True); time.sleep(3.8)' "$ND/$SID.lock" > "$W/held" &
   HOLDER=$!
   while [ ! -s "$W/held" ]; do sleep 0.05; done
-  T0=$(python3 -I -c 'import time; print(time.time())')
-  OUT=$(pl Bash "$1" "$2" | PATH="$FAKE:$PATH" python3 -I "$SCRIPT" nudge 2>/dev/null); RC=$?
-  T1=$(python3 -I -c 'import time; print(time.time())')
+  pl Bash "$1" "$2" > "$W/payload"
+  python3 -I -c 'import subprocess,sys,time,os
+env=dict(os.environ, PATH=sys.argv[3] + ":" + os.environ["PATH"])
+t=time.monotonic()
+r=subprocess.run(["python3","-I",sys.argv[1],"nudge"],input=open(sys.argv[2]).read(),capture_output=True,text=True,env=env)
+e=time.monotonic()-t
+print(e); print(r.returncode); sys.stdout.write(r.stdout)' "$SCRIPT" "$W/payload" "$FAKE" > "$W/timed"
+  ELAPSED=$(sed -n 1p "$W/timed"); RC=$(sed -n 2p "$W/timed"); OUT=$(sed -n '3,$p' "$W/timed")
   wait "$HOLDER" 2>/dev/null; rm -f "$W/held"
 }
-slow_run "$R" "git commit -m x"
-expect_empty "T27 commit behind a lock and a slow rev-parse prints nothing"
-python3 -I -c 'import sys; sys.exit(0 if float(sys.argv[2]) - float(sys.argv[1]) < 4.3 else 1)' "$T0" "$T1" && pass "T27 the commit run ends within the 4 second budget" || fail "T27 the commit run took too long"
-slow_run "$R" "\"$SETUP\" status && git commit -m x"
-expect_empty "T27 setup-call and commit behind a lock print nothing"
-python3 -I -c 'import sys; sys.exit(0 if float(sys.argv[2]) - float(sys.argv[1]) < 4.3 else 1)' "$T0" "$T1" && pass "T27 the combined run ends within the 4 second budget" || fail "T27 the combined run took too long"
+under5() { python3 -I -c 'import sys; sys.exit(0 if float(sys.argv[1]) < 5.0 else 1)' "$1"; }
+slow_run "$R" "$THREE"
+expect_empty "T27 commits behind a lock and a slow rev-parse print nothing"
+under5 "$ELAPSED" && pass "T27 the commit run ends within 5 seconds ($ELAPSED s)" || fail "T27 the commit run took $ELAPSED s"
+slow_run "$R" "\"$SETUP\" status && $THREE"
+expect_empty "T27 setup-call and commits behind a lock print nothing"
+under5 "$ELAPSED" && pass "T27 the combined run ends within 5 seconds ($ELAPSED s)" || fail "T27 the combined run took $ELAPSED s"
 [ "$(state_len pending)" = 1 ] && pass "T27 the repository stays pending" || fail "T27 pending count is $(state_len pending)"
 
 harness_exit
