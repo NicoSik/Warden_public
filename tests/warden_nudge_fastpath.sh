@@ -42,6 +42,38 @@ expect_no_handoff "ls with no session_id" '{"tool_name":"Bash","tool_input":{"co
 : > "$HOME/.claude/warden/nudge/s1.ready"
 expect_handoff "sid is sanitized before the marker lookup" "$(bash_payload 's/1' 'ls')"
 
+# One hand-off test per trigger word (REQ-1.1 create words, git -C, graphify-setup).
+rm -f "$HOME/.claude/warden/nudge/s1.ready"
+for w in 'git init' 'git clone' 'create-next-app' 'npm create' 'pnpm create' 'yarn create' \
+         'bun create' 'npx create-' 'cargo new' 'cargo init' 'uv init' 'git -C' 'graphify-setup'; do
+  expect_handoff "trigger word '$w'" "$(bash_payload s1 "$w x")"
+done
+
+# Command output must not start Python: only the part before "tool_response" is scanned.
+resp_payload() { # resp_payload SID CMD OUTPUT: Claude Code's key order, tool_input before tool_response
+  printf '{"session_id":"%s","cwd":"/tmp","tool_name":"Bash","tool_input":{"command":"%s"},"tool_response":{"stdout":"%s"}}' "$1" "$2" "$3"
+}
+RESP_LS=$(resp_payload s1 ls '(use \"git add\" and/or \"git commit -a\")')
+expect_no_handoff "ls whose tool_response holds git commit -a" "$RESP_LS"
+expect_handoff "git commit with a tool_response" "$(resp_payload s1 'git commit -m x' 'done')"
+# tool_response first: no "tool_input" before it, so the whole payload is scanned.
+expect_handoff "tool_response first, trigger after it (fallback)" \
+  '{"session_id":"s1","tool_response":{"stdout":"ok"},"tool_name":"Bash","tool_input":{"command":"git init"}}'
+
+# End to end: the real prefilter and the real warden-lesson turn a git init into a pending entry.
+E2E="$HARNESS_TMP/e2e"
+mkdir -p "$E2E"
+: > "$E2E/transcript.jsonl"
+sleep 1
+git init -q "$E2E/proj"
+printf '{"session_id":"e2e1","transcript_path":"%s","cwd":"%s","tool_name":"Bash","tool_input":{"command":"git init proj"},"tool_response":{"stdout":"ok"}}' \
+  "$E2E/transcript.jsonl" "$E2E" | "$REAL" >/dev/null 2>&1
+if grep -q 'proj' "$HOME/.claude/warden/nudge/e2e1.json" 2>/dev/null; then
+  pass "end to end: a git init payload creates a pending entry"
+else
+  fail "end to end: no pending entry in $HOME/.claude/warden/nudge/e2e1.json"
+fi
+
 # T13: the off switch.
 rm -rf "$HOME/.claude/warden"
 rc=0
@@ -74,6 +106,15 @@ if [[ "$ms" =~ ^[0-9.]+$ ]] && awk -v m="$ms" 'BEGIN{exit !(m < 20)}'; then
   pass "REQ-10.1: median CPU of an ls payload is ${ms} ms (< 20)"
 else
   fail "REQ-10.1: median CPU of an ls payload is ${ms} ms (want < 20)"
+fi
+
+rm -f "$HOME/.claude/warden/nudge/s1.ready"
+printf '%s' "$RESP_LS" | sed 's/"s1"/"s4"/' > "$HARNESS_TMP/resp.json"
+ms=$(median_ms "$HARNESS_TMP/resp.json")
+if [[ "$ms" =~ ^[0-9.]+$ ]] && awk -v m="$ms" 'BEGIN{exit !(m < 20)}'; then
+  pass "REQ-10.1: median CPU of an ls payload with a trigger word in tool_response is ${ms} ms (< 20)"
+else
+  fail "REQ-10.1: median CPU of an ls payload with a trigger word in tool_response is ${ms} ms (want < 20)"
 fi
 
 REPO="$HARNESS_TMP/repo"

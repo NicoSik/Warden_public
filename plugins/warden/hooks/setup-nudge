@@ -18,11 +18,15 @@ if [[ "$payload" != *'"agent_id"'* ]] && [ -e "$HOME/.claude/warden/nudge/${sid}
   handoff=1
 else
   skill_re='"tool_name"[[:space:]]*:[[:space:]]*"Skill"'
-  case "$payload" in
+  # Scan only what comes before "tool_response": command output must not start Python.
+  # If that prefix has no "tool_input", the key order is unknown: scan the whole payload.
+  scan="${payload%%\"tool_response\"*}"
+  [[ "$scan" == *'"tool_input"'* ]] || scan="$payload"
+  case "$scan" in
     *'git init'*|*'git clone'*|*'git commit'*|*'git -C'*|*'create-next-app'*|*'npm create'*|\
     *'pnpm create'*|*'yarn create'*|*'bun create'*|*'npx create-'*|*'cargo new'*|*'cargo init'*|\
     *'uv init'*|*'graphify-setup'*) handoff=1 ;;
-    *) [[ "$payload" =~ $skill_re ]] && handoff=1 ;;
+    *) [[ "$scan" =~ $skill_re ]] && handoff=1 ;;
   esac
 fi
 [ "$handoff" = 1 ] || exit 0
