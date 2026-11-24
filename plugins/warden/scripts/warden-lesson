@@ -989,6 +989,27 @@ def report_rows(include_hidden=False):
     return rows, lessons, hidden_counts
 
 
+def nudge_rows():
+    """List every setup-check nudge, newest first. Read-only.
+
+    A nudge is followed when its session log holds a setup-call for the same repo with a later ts.
+    """
+    files, _ = _log_files()
+    rows = []
+    for f in files:
+        lines = _read_lines(f)
+        calls = [(d.get("repo"), str(d.get("ts") or "")) for d in lines if d.get("t") == "setup-call"]
+        for d in lines:
+            if d.get("t") != "nudge":
+                continue
+            ts = str(d.get("ts") or "")
+            rows.append({"ts": ts, "repo": d.get("repo") or "", "trigger": d.get("trigger") or "",
+                         "via": d.get("via") or "", "word": d.get("word") or "",
+                         "followed": any(r == d.get("repo") and t > ts for r, t in calls)})
+    rows.sort(key=lambda r: r["ts"], reverse=True)
+    return rows
+
+
 def _report(args):
     rows, lessons, hidden = report_rows(include_hidden=args.all)
     for r in rows:
@@ -1003,7 +1024,13 @@ def _report(args):
         print("\nLessons:")
         for d in lessons:
             print("  ".join([d["ts"][:10], d["src"], d["repo"] or "-", d["text"]]))
-    if rows or lessons:
+    nudges = nudge_rows()
+    if nudges:
+        print("\nNudges:")
+        for n in nudges:
+            print("  ".join([n["ts"][:10], n["repo"] or "-", n["trigger"] or "-", n["via"] or "-",
+                             n["word"] or "-", "setup-call" if n["followed"] else "no setup-call"]))
+    if rows or lessons or nudges:
         print()
     shown = ["%d %s" % (hidden[k], k) for k in HIDE_REASONS if hidden.get(k)]
     print("hidden: " + (", ".join(shown) if shown else "0"))
