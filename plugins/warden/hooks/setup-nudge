@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# PostToolUse prefilter for the setup-check nudge. It runs on every Bash and Skill call.
+# It starts no Python and no git unless the payload can matter. No set -e: it must never block.
+[ "${WARDEN_NUDGE_OFF:-}" = 1 ] && exit 0
+
+payload=$(cat)
+
+re='"session_id"[[:space:]]*:[[:space:]]*"([^"]*)"'
+sid=""
+if [[ "$payload" =~ $re ]]; then
+  sid="${BASH_REMATCH[1]}"
+fi
+sid="${sid//[!A-Za-z0-9_-]/}"
+[ -n "$sid" ] || exit 0
+
+handoff=0
+if [[ "$payload" != *'"agent_id"'* ]] && [ -e "$HOME/.claude/warden/nudge/${sid}.ready" ]; then
+  handoff=1
+else
+  skill_re='"tool_name"[[:space:]]*:[[:space:]]*"Skill"'
+  case "$payload" in
+    *'git init'*|*'git clone'*|*'git commit'*|*'git -C'*|*'create-next-app'*|*'npm create'*|\
+    *'pnpm create'*|*'yarn create'*|*'bun create'*|*'npx create-'*|*'cargo new'*|*'cargo init'*|\
+    *'uv init'*|*'graphify-setup'*) handoff=1 ;;
+    *) [[ "$payload" =~ $skill_re ]] && handoff=1 ;;
+  esac
+fi
+[ "$handoff" = 1 ] || exit 0
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(dirname "$SCRIPT_DIR")"
+printf '%s' "$payload" | python3 -I "${ROOT}/scripts/warden-lesson" nudge
+exit 0
