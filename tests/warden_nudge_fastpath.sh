@@ -31,10 +31,22 @@ bash_payload() { printf '{"session_id":"%s","tool_name":"Bash","tool_input":{"co
 
 mkdir -p "$HOME/.claude/warden/nudge"
 expect_no_handoff "ls with no marker" "$(bash_payload s1 'ls')"
-expect_handoff "git commit" "$(bash_payload s1 'git commit -m x')"
-expect_handoff "Skill tool call" '{"session_id":"s1","tool_name" : "Skill","tool_input":{"skill":"x"}}'
-expect_handoff "git -C" "$(bash_payload s1 'git -C /x status')"
-expect_handoff "graphify-setup" "$(bash_payload s1 '/p/graphify-setup')"
+expect_handoff "graphify-setup (no state file)" "$(bash_payload s1 '/p/graphify-setup')"
+# Skill, git commit and git -C hand off only when <sid>.json exists (V4).
+skill_payload() { printf '{"session_id":"s1","tool_name" : "Skill","tool_input":{"skill":"%s"}}' "$1"; }
+for sk in superpowers:executing-plans superpowers:writing-plans; do
+  expect_no_handoff "Skill $sk without state" "$(skill_payload $sk)"
+done
+expect_no_handoff "git commit without state" "$(bash_payload s1 'git commit -m x')"
+expect_no_handoff "git -C without state" "$(bash_payload s1 'git -C x status')"
+: > "$HOME/.claude/warden/nudge/s1.json"
+for sk in superpowers:executing-plans superpowers:writing-plans; do
+  expect_handoff "Skill $sk with state" "$(skill_payload $sk)"
+done
+expect_handoff "git commit with state" "$(bash_payload s1 'git commit -m x')"
+expect_handoff "git -C with state" "$(bash_payload s1 'git -C x status')"
+expect_no_handoff "ls with state only" "$(bash_payload s1 'ls')"
+rm -f "$HOME/.claude/warden/nudge/s1.json"
 : > "$HOME/.claude/warden/nudge/s1.ready"
 expect_handoff "main-session ls with marker" "$(bash_payload s1 'ls')"
 expect_no_handoff "subagent ls with marker" "$(bash_payload s1 'ls' ',"agent_id":"a1"')"
@@ -45,7 +57,7 @@ expect_handoff "sid is sanitized before the marker lookup" "$(bash_payload 's/1'
 # One hand-off test per trigger word (REQ-1.1 create words, git -C, graphify-setup).
 rm -f "$HOME/.claude/warden/nudge/s1.ready"
 for w in 'git init' 'git clone' 'create-next-app' 'npm create' 'pnpm create' 'yarn create' \
-         'bun create' 'npx create-' 'cargo new' 'cargo init' 'uv init' 'git -C' 'graphify-setup'; do
+         'bun create' 'npx create-' 'cargo new' 'cargo init' 'uv init' 'graphify-setup'; do
   expect_handoff "trigger word '$w'" "$(bash_payload s1 "$w x")"
 done
 
@@ -55,7 +67,9 @@ resp_payload() { # resp_payload SID CMD OUTPUT: Claude Code's key order, tool_in
 }
 RESP_LS=$(resp_payload s1 ls '(use \"git add\" and/or \"git commit -a\")')
 expect_no_handoff "ls whose tool_response holds git commit -a" "$RESP_LS"
+: > "$HOME/.claude/warden/nudge/s1.json"
 expect_handoff "git commit with a tool_response" "$(resp_payload s1 'git commit -m x' 'done')"
+rm -f "$HOME/.claude/warden/nudge/s1.json"
 # tool_response first: no "tool_input" before it, so the whole payload is scanned.
 expect_handoff "tool_response first, trigger after it (fallback)" \
   '{"session_id":"s1","tool_response":{"stdout":"ok"},"tool_name":"Bash","tool_input":{"command":"git init"}}'
@@ -108,6 +122,14 @@ else
   fail "REQ-10.1: median CPU of an ls payload is ${ms} ms (want < 20)"
 fi
 
+printf '{"session_id":"s5","tool_name":"Skill","tool_input":{"skill":"superpowers:writing-plans"}}' > "$HARNESS_TMP/skill.json"
+ms=$(median_ms "$HARNESS_TMP/skill.json")
+if [[ "$ms" =~ ^[0-9.]+$ ]] && awk -v m="$ms" 'BEGIN{exit !(m < 20)}'; then
+  pass "REQ-10.1: median CPU of a Skill payload in a session without state is ${ms} ms (< 20)"
+else
+  fail "REQ-10.1: median CPU of a Skill payload in a session without state is ${ms} ms (want < 20)"
+fi
+
 rm -f "$HOME/.claude/warden/nudge/s1.ready"
 printf '%s' "$RESP_LS" | sed 's/"s1"/"s4"/' > "$HARNESS_TMP/resp.json"
 ms=$(median_ms "$HARNESS_TMP/resp.json")
@@ -121,6 +143,8 @@ REPO="$HARNESS_TMP/repo"
 git init -q "$REPO"
 git -C "$REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 printf '{"session_id":"s3","tool_name":"Bash","tool_input":{"command":"git commit -m x"},"cwd":"%s"}' "$REPO" > "$HARNESS_TMP/commit.json"
+mkdir -p "$HOME/.claude/warden/nudge"
+printf '{"pending":{},"nudged":[],"dropped":[]}' > "$HOME/.claude/warden/nudge/s3.json"
 ms=$(median_ms "$HARNESS_TMP/commit.json")
 if [[ "$ms" =~ ^[0-9.]+$ ]] && awk -v m="$ms" 'BEGIN{exit !(m < 100)}'; then
   pass "REQ-10.2: median CPU of a git commit payload (not pending) is ${ms} ms (< 100)"
