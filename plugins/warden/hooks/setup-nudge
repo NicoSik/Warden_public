@@ -26,7 +26,7 @@ else
     # Create commands and graphify-setup always hand off.
     *'git init'*|*'git clone'*|*'create-next-app'*|*'npm create'*|\
     *'pnpm create'*|*'yarn create'*|*'bun create'*|*'npx create-'*|*'cargo new'*|*'cargo init'*|\
-    *'uv init'*|*'graphify-setup'*) handoff=1 ;;
+    *'uv init'*|*'graphify-setup'*|*'git -C '*' init'*|*'git -C '*' clone'*) handoff=1 ;;
     # Commit, git -C and Skill calls hand off only when the session has a state file.
     *'git commit'*|*'git -C'*) [ -e "$HOME/.claude/warden/nudge/${sid}.json" ] && handoff=1 ;;
     *) [[ "$scan" =~ $skill_re ]] && [ -e "$HOME/.claude/warden/nudge/${sid}.json" ] && handoff=1 ;;

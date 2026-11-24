@@ -39,6 +39,8 @@ for sk in superpowers:executing-plans superpowers:writing-plans; do
 done
 expect_no_handoff "git commit without state" "$(bash_payload s1 'git commit -m x')"
 expect_no_handoff "git -C without state" "$(bash_payload s1 'git -C x status')"
+expect_handoff "git -C proj init without state" "$(bash_payload s1 'git -C proj init')"
+expect_handoff "git -C proj clone without state" "$(bash_payload s1 'git -C proj clone https://x/y.git')"
 : > "$HOME/.claude/warden/nudge/s1.json"
 for sk in superpowers:executing-plans superpowers:writing-plans; do
   expect_handoff "Skill $sk with state" "$(skill_payload $sk)"
@@ -86,6 +88,20 @@ if grep -q 'proj' "$HOME/.claude/warden/nudge/e2e1.json" 2>/dev/null; then
   pass "end to end: a git init payload creates a pending entry"
 else
   fail "end to end: no pending entry in $HOME/.claude/warden/nudge/e2e1.json"
+fi
+
+# End to end: git -C <new repo> init in a session without state still marks the repository.
+E2E2="$HARNESS_TMP/e2e2"
+mkdir -p "$E2E2"
+: > "$E2E2/transcript.jsonl"
+sleep 1
+git init -q "$E2E2/proj2"
+printf '{"session_id":"e2e2","transcript_path":"%s","cwd":"%s","tool_name":"Bash","tool_input":{"command":"git -C proj2 init"},"tool_response":{"stdout":"ok"}}' \
+  "$E2E2/transcript.jsonl" "$E2E2" | "$REAL" >/dev/null 2>&1
+if grep -q 'proj2' "$HOME/.claude/warden/nudge/e2e2.json" 2>/dev/null; then
+  pass "end to end: a git -C init payload without state creates a pending entry"
+else
+  fail "end to end: no pending entry for git -C init in $HOME/.claude/warden/nudge/e2e2.json"
 fi
 
 # T13: the off switch.
