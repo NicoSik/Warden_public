@@ -150,16 +150,28 @@ fi
 
 # REQ-8: the lesson hook entries.
 LCMD='python3 -I "${CLAUDE_PLUGIN_ROOT}/scripts/warden-lesson" hook'
+NUDGE_ENTRY='{"matcher":"Bash|Skill","hooks":[{"type":"command","command":"\"${CLAUDE_PLUGIN_ROOT}/hooks/setup-nudge\"","shell":"bash","async":false,"timeout":5}]}'
 for spec in "PostToolUseFailure|Bash" "PostToolUse|Bash|Edit|Write|MultiEdit|NotebookEdit"; do
   ev="${spec%%|*}"; mt="${spec#*|}"
   got=$(jq -c --arg ev "$ev" '.hooks[$ev] // [] | map({matcher, hooks})' "$H" 2>/dev/null)
   want=$(jq -cn --arg mt "$mt" --arg c "$LCMD" '[{matcher:$mt,hooks:[{type:"command",command:$c,shell:"bash",async:true}]}]')
-  if [ "$got" = "$want" ]; then
+  if [ "$ev" = PostToolUse ]; then
+    # The lesson entry stays unchanged; the nudge entry is the only other one.
+    want=$(jq -cn --argjson l "$want" --argjson n "$NUDGE_ENTRY" '$l + [$n]')
+    if [ "$got" = "$want" ]; then
+      pass "$ev has the lesson entry for matcher '$mt', unchanged, then the nudge entry only"
+    else
+      fail "$ev entries differ (want: $want; got: $got)"
+    fi
+  elif [ "$got" = "$want" ]; then
     pass "$ev has one async entry for matcher '$mt' running the lesson hook"
   else
     fail "$ev entry differs (want: $want; got: $got)"
   fi
 done
+# T19: the nudge entry is synchronous, matches Bash|Skill and times out at 5 s.
+t19=$(jq -c '.hooks.PostToolUse[1] | [.matcher, .hooks[0].async, .hooks[0].timeout]' "$H" 2>/dev/null)
+[ "$t19" = '["Bash|Skill",false,5]' ] && pass "T19: the nudge entry is synchronous, matches Bash|Skill, timeout 5" || fail "T19: nudge entry wrong ($t19)"
 
 # SessionStart and SubagentStart are unchanged (literal copy of the pre-REQ-8 JSON).
 OLD_START='{"matcher":"startup|clear|compact","hooks":[{"type":"command","command":"\"${CLAUDE_PLUGIN_ROOT}/hooks/code-map\" SessionStart","shell":"bash","async":false}]}'

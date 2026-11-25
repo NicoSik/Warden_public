@@ -750,4 +750,38 @@ fresh_root
 EOUT="$(WL report)"; RC=$?
 [ "$RC" = 0 ] && [ "$EOUT" = "hidden: 0" ] && [ ! -e "$ROOT" ] && pass "report on an empty inbox prints hidden: 0" || fail "empty report: rc=$RC out='$EOUT'"
 
+# ---- Nudges in the report (setup-check nudge) ----
+# rnudge SESSION TS REPO: one nudge line. rsetup SESSION TS REPO: one setup-call line.
+rnudge() { rline "$1" "{\"t\":\"nudge\",\"ts\":\"$2\",\"repo\":\"$3\",\"trigger\":\"skill\",\"via\":\"direct\",\"word\":\"ask\"}"; }
+rsetup() { rline "$1" "{\"t\":\"setup-call\",\"ts\":\"$2\",\"repo\":\"$3\"}"; }
+fresh_root; mkdir -p "$ROOT/sessions"
+rnudge n1 2026-11-20T10:00:00Z "alpha#aaaa1111"
+rsetup n1 2026-11-20T10:05:00Z "alpha#aaaa1111"
+NOUT="$(WL report)"
+printf '%s\n' "$NOUT" | grep -q '^Nudges:$' \
+  && [ "$(printf '%s\n' "$NOUT" | grep -c '^2026-11-20  alpha#aaaa1111  skill  direct  ask  setup-call$')" = 1 ] \
+  && pass "a nudge followed by a matching setup-call shows setup-call" || fail "followed nudge: $NOUT"
+fresh_root; mkdir -p "$ROOT/sessions"
+rnudge n2 2026-11-20T10:00:00Z "alpha#aaaa1111"
+rsetup n2 2026-11-20T10:05:00Z "beta#bbbb2222"
+rnudge n3 2026-11-21T10:00:00Z "alpha#aaaa1111"
+rsetup n3 2026-11-21T09:00:00Z "alpha#aaaa1111"
+NOUT="$(WL report)"
+[ "$(printf '%s\n' "$NOUT" | grep -c 'ask  no setup-call$')" = 2 ] && ! printf '%s\n' "$NOUT" | grep -q 'ask  setup-call$' \
+  && pass "a setup-call for another repo or before the nudge shows no setup-call" || fail "unfollowed nudge: $NOUT"
+fresh_root; mkdir -p "$ROOT/sessions"
+rfail s1 alpha git "fatal: not a git repository"
+NO_BEFORE="$(WL report)"
+rsetup s1 2026-11-20T10:05:00Z "alpha#aaaa1111"
+NO_AFTER="$(WL report)"
+[ "$NO_BEFORE" = "$NO_AFTER" ] && ! printf '%s\n' "$NO_AFTER" | grep -q 'Nudges:' \
+  && pass "a report without a nudge line is unchanged" || fail "no-nudge report changed"
+fresh_root; mkdir -p "$ROOT/sessions"
+rfail s1 alpha git "fatal: not a git repository"
+LIST_BEFORE="$(WL list --json)"
+rnudge s1 2026-11-20T10:00:00Z "alpha#aaaa1111"
+rsetup s1 2026-11-20T10:05:00Z "alpha#aaaa1111"
+LIST_AFTER="$(WL list --json)"
+[ "$LIST_BEFORE" = "$LIST_AFTER" ] && pass "list --json ignores nudge and setup-call lines" || fail "list --json changed"
+
 harness_exit
