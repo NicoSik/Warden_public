@@ -154,6 +154,7 @@ def main():
     ap.add_argument("--raw-dir", default="")
     ap.add_argument("--merge-check-stub", action="store_true")
     ap.add_argument("--result", action="append", default=[])
+    ap.add_argument("--setup-status", action="append", default=[])
     a = ap.parse_args()
 
     results = {}
@@ -264,6 +265,10 @@ def main():
                 if s == cand:
                     roles.append("candidate of %s" % case)
             out.append("- Arm commit %s (%s)" % (s, "; ".join(roles)))
+        for item in a.setup_status:
+            key, _, value = item.partition("=")
+            ssha, _, scase = key.partition(":")
+            out.append("- Setup status of %s in %s: %s" % (ssha, scase, value))
         out.append("- graphify --version: %s" % a.graphify_version)
         out.append("- Fixture tree hash: %s" % a.fixture_hash)
         out.append("- Merge check: %s" % ("STUB" if a.merge_check_stub else "lib/merge_check.py"))
