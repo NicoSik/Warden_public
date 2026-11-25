@@ -130,8 +130,9 @@ Check: `python3 plugins/superpowers/skills/asd-ste100/scripts/ste-lint.py` on th
 
 **Brief:** Write `~/.cache/warden-behavior/read-order-shim-arms.conf` with two rows: `read-order 18498db a0f4807 both-at-least 4` and `read-order-heldout 18498db a0f4807 both-at-least 4`. Write `~/.cache/warden-behavior/run-read-order-shim.sh`, which changes into this worktree and runs `tests/behavior/run-behavior --arms` on that file. Hand Nicolai the one-line command `bash ~/.cache/warden-behavior/run-read-order-shim.sh`, to run in a normal terminal. The prompt should show `Agents: 20 (2 cases, 4 arms x 5 runs)`. When he pastes the result:
 - Check that the record pins `stubbed (ready)` for `a0f4807` and `not present` for `18498db`, in both cases.
-- If `a0f4807` scores at least 4/5 in both cases, commit the record and go on to the final review.
-- If it does not, stop and report to Nicolai. The cause would then be the setup-check wording.
+- If `18498db` scores under 4/5 in either case, stop and report to Nicolai. That arm has no setup check, so a low score there means that something else is wrong.
+- If `a0f4807` scores under 4/5 in either case, stop and report to Nicolai. The cause would then be the setup-check wording.
+- If both arms score at least 4/5 in both cases, commit the record and go on to the final review.
 
 ## Waves
 
@@ -148,6 +149,7 @@ After the last wave: the final review, the fix wave and the scoped re-review, th
 2. **The stub runs on the wrong path.** In a merged arm, the warden script sits at `plugins/superpowers/scripts/graphify-setup`, as the traces show. A stub at another path would leave the real script in place, and the read-order score would stay low. Test 17a checks the exact path.
 3. **The copy changes the eval count or the trace paths.** Test 17f checks the count. The trace step reads `tracePath` from the result, so the copy path flows through.
 4. **The rerun shows no recovery.** Then the shim works, but the cause is elsewhere. Task 3 stops and reports, as Nicolai asked.
+5. **The control arm drops.** If `18498db` scores under 4/5, the eval itself is unstable. Task 3 stops and reports, as Nicolai asked.
 
 Ruled out:
 - Swap-and-restore in place: an interrupted run could leave the stub behind (decision OQ1).
