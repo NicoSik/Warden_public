@@ -25,6 +25,8 @@ Cases whose name starts with `read-order` (including `read-order-heldout`) are g
 `lib/graph_first.py`. After grading, the run prints the first 5 tool calls of every such run to the
 terminal under `first commands: <case> / <arm> / run <i>`. This text never goes into the record.
 
+In the `read-order` and `read-order-heldout` cases, the wrapper runs each arm on its own copy. In that copy, `lib/setup-status-stub` takes the place of `scripts/graphify-setup`. The stub prints `ready` for `status` and refuses every other subcommand. The eval sandbox blocks git, so the real script always prints `unavailable` there, and `setup-check.md` then tells the agent to continue without Graphify. A real session in a repository with a graph prints `ready`. An arm without `graphify-setup` runs unchanged. The record pins `Setup status of <sha> in <case>: stubbed (ready)` or `not present`. The setup cases always use the real script.
+
 Each arm comes from `git archive <ref> plugins/superpowers` into a scratch directory. The run never
 checks out a ref and never touches your project, your `~/.claude`, or the git state of this repo.
 `claude plugin eval` loads one plugin. When an arm has `plugins/warden`, the wrapper archives the whole
