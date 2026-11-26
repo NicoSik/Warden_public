@@ -97,7 +97,7 @@ Test command: `bash tests/warden_ledger.sh && bash tests/warden_lessons.sh`
 **Steps:**
 - [ ] Write T1, T2, T4, T5, T6, T8, T9 and the mode check in `tests/warden_ledger.sh`.
 - [ ] Run `bash tests/warden_ledger.sh` and see the tests fail because `mark` is an unknown mode.
-- [ ] Write `warden_ledger.py` with `STATUSES`, `ledger_path`, `read_ledger`, `add_mark_parser` and `mark_cmd`.
+- [ ] Write `warden_ledger.py` with `STATUSES`, `ledger_path`, `read_ledger` and `mark_cmd`.
 - [ ] Add `_ledger()` and the `mark` registration to `warden-lesson`, and update the docstring.
 - [ ] Run `bash tests/warden_ledger.sh` and see every test pass.
 - [ ] Run `bash tests/warden_lessons.sh` and see it stay green, including both timing tests.
