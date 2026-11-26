@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """warden-lesson: a lesson inbox outside every repository.
 
-Modes: hook, nudge, add, list, status. This file holds the store, the secret scrub, retention and the hook.
+Modes: hook, nudge, add, list, report, status, mark, weekly, schedule. This file holds the store, the secret scrub, retention and the hook.
 """
 import datetime
 import fcntl
@@ -1090,6 +1090,20 @@ def _status(args):
     return 0
 
 
+def _ledger():
+    """Load warden_ledger.py by path on first use. The hook path never calls this."""
+    mod = sys.modules.get("warden_ledger")
+    if mod is None:
+        import importlib.util
+        path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "warden_ledger.py")
+        spec = importlib.util.spec_from_file_location("warden_ledger", path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["warden_ledger"] = mod
+        spec.loader.exec_module(mod)
+    mod.WL = sys.modules[__name__]
+    return mod
+
+
 def main(argv=None):
     import argparse  # Lazy: the hook path does not need it.
     parser = argparse.ArgumentParser(prog="warden-lesson")
@@ -1105,6 +1119,17 @@ def main(argv=None):
     pr.add_argument("--all", action="store_true")
     pr.set_defaults(func=_report)
     sub.add_parser("status").set_defaults(func=_status)
+    pm = sub.add_parser("mark")
+    pm.add_argument("slug", nargs="?")
+    pm.add_argument("status", nargs="?")
+    pm.add_argument("--match")
+    pm.add_argument("--nudge", action="store_true")
+    pm.add_argument("--pr", type=int)
+    pm.add_argument("--fixed-on", dest="fixed_on")
+    pm.add_argument("--note")
+    pm.add_argument("--history", action="store_true")
+    pm.add_argument("--list", action="store_true")
+    pm.set_defaults(func=lambda a: _ledger().mark_cmd(a))
     sub.add_parser("hook").set_defaults(func=_hook)
     sub.add_parser("nudge").set_defaults(func=_nudge)
     args, _ = parser.parse_known_args(argv)
