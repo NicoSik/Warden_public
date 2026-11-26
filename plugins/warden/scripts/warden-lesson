@@ -961,7 +961,7 @@ def _all_records():
     return recs
 
 
-HIDE_REASONS = ("fixed test failure", "one-off exception", "no signature")
+HIDE_REASONS = ("fixed test failure", "one-off exception", "no signature", "ignored")
 EXCEPTION_RE = re.compile(r"(?:[\w.]+\.)?(\w+(?:Error|Exception)):")
 ENV_EXCEPTIONS = frozenset({"ModuleNotFoundError", "ImportError", "FileNotFoundError", "PermissionError",
                             "ConnectionRefusedError", "TimeoutError", "OSError"})
@@ -1004,6 +1004,7 @@ def report_rows(include_hidden=False):
             if not include_hidden:
                 continue
         rows.append({"sig": g["sig"], "norm": norm, "sessions": len(g["sessions"]), "repos": repos,
+                     "session_names": sorted(g["sessions"]),
                      "count": sum(r["count"] for r in g["recs"]),
                      "cmds": sorted({r["cmd"] for r in g["recs"] if r["cmd"]}),
                      "last_ts": max(r["ts"] for r in g["recs"]), "flagged": g["flagged"],
@@ -1023,6 +1024,7 @@ def nudge_rows():
     files, _ = _log_files()
     rows = []
     for f in files:
+        session = os.path.basename(f)[:-len(".jsonl")]
         lines = _read_lines(f)
         calls = [(d.get("repo"), str(d.get("ts") or "")) for d in lines if d.get("t") == "setup-call"]
         for d in lines:
@@ -1030,36 +1032,58 @@ def nudge_rows():
                 continue
             ts = str(d.get("ts") or "")
             rows.append({"ts": ts, "repo": d.get("repo") or "", "trigger": d.get("trigger") or "",
-                         "via": d.get("via") or "", "word": d.get("word") or "",
+                         "via": d.get("via") or "", "word": d.get("word") or "", "session": session,
                          "followed": any(r == d.get("repo") and t > ts for r, t in calls)})
     rows.sort(key=lambda r: r["ts"], reverse=True)
     return rows
 
 
-def _report(args):
-    rows, lessons, hidden = report_rows(include_hidden=args.all)
-    for r in rows:
-        parts = ["!!" if r["flagged"] else "--", "s%d" % r["sessions"], "x%d" % r["count"],
-                 ",".join(r["repos"]) or "-", ",".join(r["cmds"]) or "-", r["sig"] or "-"]
-        if r["flaky"]:
-            parts.append("flaky")
-        if r["hidden"]:
-            parts.append("hidden(%s)" % r["hidden"])
-        print("  ".join(parts))
+def row_line(r):
+    parts = ["!!" if r["flagged"] else "--", "s%d" % r["sessions"], "x%d" % r["count"],
+             ",".join(r["repos"]) or "-", ",".join(r["cmds"]) or "-", r["sig"] or "-"]
+    if r["flaky"]:
+        parts.append("flaky")
+    if r.get("ledger_tag"):
+        parts.append("ledger(%s)" % r["ledger_tag"])
+    if r["hidden"]:
+        parts.append("hidden(%s)" % r["hidden"])
+    return "  ".join(parts)
+
+
+def nudge_line(n):
+    return "  ".join([n["ts"][:10], n["repo"] or "-", n["trigger"] or "-", n["via"] or "-",
+                      n["word"] or "-", "setup-call" if n["followed"] else "no setup-call"])
+
+
+def format_report(rows, lessons, nudges, hidden):
+    """Return the report lines, without the ledger section."""
+    out = [row_line(r) for r in rows]
     if lessons:
-        print("\nLessons:")
+        out.append("\nLessons:")
         for d in lessons:
-            print("  ".join([d["ts"][:10], d["src"], d["repo"] or "-", d["text"]]))
-    nudges = nudge_rows()
+            out.append("  ".join([d["ts"][:10], d["src"], d["repo"] or "-", d["text"]]))
     if nudges:
-        print("\nNudges:")
-        for n in nudges:
-            print("  ".join([n["ts"][:10], n["repo"] or "-", n["trigger"] or "-", n["via"] or "-",
-                             n["word"] or "-", "setup-call" if n["followed"] else "no setup-call"]))
+        out.append("\nNudges:")
+        out.extend(nudge_line(n) for n in nudges)
     if rows or lessons or nudges:
-        print()
+        out.append("")
     shown = ["%d %s" % (hidden[k], k) for k in HIDE_REASONS if hidden.get(k)]
-    print("hidden: " + (", ".join(shown) if shown else "0"))
+    out.append("hidden: " + (", ".join(shown) if shown else "0"))
+    return out
+
+
+def _report(args):
+    try:
+        has_ledger = os.path.getsize(os.path.join(inbox(), "ledger.jsonl")) > 0
+    except OSError:
+        has_ledger = False
+    if has_ledger:
+        led = _ledger()
+        print(led.render_report(led.ledger_view(args.all)))
+        return 0
+    rows, lessons, hidden = report_rows(include_hidden=args.all)
+    for line in format_report(rows, lessons, nudge_rows(), hidden):
+        print(line)
     return 0
 
 

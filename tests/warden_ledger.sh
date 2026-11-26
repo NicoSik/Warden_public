@@ -121,5 +121,123 @@ BEFORE="$(sums)"
 WL report >/dev/null 2>&1; WL status >/dev/null 2>&1; WL mark --list >/dev/null 2>&1
 [ "$(sums)" = "$BEFORE" ] && pass "report, status and mark --list leave the inbox unchanged" || fail "inbox changed"
 
+# ---- Task 2: matching, the after-fix rule, the report decoration, mark match output ----
+export TZ=Europe/Oslo
+# sfail SESSION TS CMD SIG [REPO]: one fail line. sline SESSION JSON: a raw line.
+sfail() {
+  printf '{"t":"fail","ts":"%s","src":"hook","cmd":"%s","exit":1,"sig":"%s","session_id":"%s","transcript_path":"","tool_use_id":"u","repo":"%s","branch":"b","commit":"c"}\n' \
+    "$2" "$3" "$4" "$1" "${5:-r}" >> "$ROOT/sessions/$1.jsonl"
+}
+sline() { echo "$2" >> "$ROOT/sessions/$1.jsonl"; }
+sroot() { fresh_root; mkdir -p "$ROOT/sessions"; }
+
+# T7. mark prints what the regex matches.
+sroot
+for i in 1 2 3; do sfail "s$i" "2026-11-1${i}T10:00:00Z" make "(eval):$i: ==== not found"; done
+sfail s4 2026-11-14T10:00:00Z python "KeyError: 'x'"
+OUT="$(WL mark w open --match '^\(eval\):N: \S+ not found$')"
+case "$OUT" in *"  matches: 1 signatures, 3 sessions, 0 after fix"*) pass "mark prints the match counts";; *) fail "mark match counts: $OUT";; esac
+OUT="$(WL mark k open --match KeyError)"
+case "$OUT" in *"  matches: 1 signatures, 1 sessions, 0 after fix"*) pass "hidden rows count in the mark output";; *) fail "mark hidden count: $OUT";; esac
+sroot
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do sfail s1 2026-11-11T10:00:00Z make "dup-$(printf '%c' $(printf "\\$(printf %o $((96+i)))")): bad"; done
+OUT="$(WL mark many open --match 'bad$')"
+N="$(printf '%s\n' "$OUT" | grep -c '^  --  ')"
+case "$OUT" in *"matches: 12 signatures"*"  +2 more"*) [ "$N" = 10 ] && pass "mark prints 10 rows and +2 more" || fail "mark printed $N rows";; *) fail "mark overflow: $OUT";; esac
+sroot
+for i in 1 2 3; do sfail "s$i" "2026-11-1${i}T10:00:00Z" make "(eval):$i: ==== not found"; done
+WL mark w open --match '^\(eval\):N: \S+ not found$' >/dev/null
+OUT="$(WL mark x open --match 'not found')"
+case "$OUT" in *"mark: warning, also matched by w"*) pass "mark warns about an overlap";; *) fail "mark overlap: $OUT";; esac
+
+# T10. No ledger, and an empty ledger, leave the report byte for byte as before.
+git -C "$REPO_DIR" show 49faf2b:plugins/warden/scripts/warden-lesson > "$HARNESS_TMP/ref"
+sroot
+sfail s1 2026-11-11T10:00:00Z git "fatal: not a git repository" alpha
+sfail s2 2026-11-12T10:00:00Z git "fatal: not a git repository" beta
+sfail s1 2026-11-11T10:00:00Z python "KeyError: 'k'"
+sline s1 '{"t":"nudge","ts":"2026-11-11T10:00:00Z","repo":"r","trigger":"skill","via":"direct","word":"ask"}'
+same_as_ref() {
+  for a in "" "--all"; do
+    local want got
+    want="$(python3 -I "$HARNESS_TMP/ref" report $a 2>&1)"; got="$(WL report $a 2>&1)"
+    [ "$want" = "$got" ] || return 1
+  done
+}
+same_as_ref && pass "report without a ledger matches the old script" || fail "no-ledger report differs"
+: > "$ROOT/ledger.jsonl"
+same_as_ref && pass "report with an empty ledger matches the old script" || fail "empty-ledger report differs"
+if py 'import sys; wl.main(["report"]); assert "warden_ledger" not in sys.modules' >/dev/null; then pass "an empty ledger does not load the module"; else fail "module loaded for an empty ledger"; fi
+
+# T11. A fixed entry with an after-fix session.
+sroot
+sfail s1 2026-11-11T10:00:00Z python "KeyError: 'x'"
+WL mark ke fixed --pr 11 --fixed-on 2026-11-10 --match KeyError >/dev/null
+OUT="$(WL report)"
+case "$OUT" in "Fixed but recurring:"*) pass "report starts with the recurring section";; *) fail "recurring start: $OUT";; esac
+case "$OUT" in *"ke  fixed #11 2026-11-10  1 session after fix"*) pass "block header";; *) fail "block header: $OUT";; esac
+printf '%s\n' "$OUT" | grep -q "^      --  s1  x1  r  python  KeyError: 'x'$" && pass "row sits indented under the header" || fail "block row: $OUT"
+[ "$(printf '%s\n' "$OUT" | grep -c "KeyError")" = 1 ] && pass "the row is not in the main list" || fail "row repeated: $OUT"
+case "$OUT" in *"hidden: 0") pass "the one-off count is one lower";; *) fail "hidden count: $OUT";; esac
+
+# T12. A session that began on the fix day is not after the fix.
+sroot
+sline s1 '{"t":"edit","ts":"2026-11-10T20:00:00Z"}'
+sfail s1 2026-11-11T09:00:00Z python "KeyError: 'x'"
+WL mark ke fixed --pr 11 --fixed-on 2026-11-10 --match KeyError >/dev/null
+OUT="$(WL report --all)"
+case "$OUT" in *"Fixed but recurring:"*) fail "same-day session counted: $OUT";; *) pass "no recurring section for a same-day session";; esac
+case "$OUT" in *"hidden(one-off exception)  ledger(ke:fixed)"*|*"ledger(ke:fixed)  hidden(one-off exception)"*) pass "the row is tagged fixed";; *) fail "tag: $OUT";; esac
+
+# T13. Nudge entries.
+sroot
+sline n1 '{"t":"nudge","ts":"2026-11-26T10:00:00Z","repo":"r","trigger":"skill","via":"direct","word":"ask"}'
+WL mark setup-check-miss fixed --nudge --fixed-on 2026-11-25 >/dev/null
+OUT="$(WL report)"
+case "$OUT" in "Fixed but recurring:"*"setup-check-miss  fixed 2026-11-25  1 session after fix"*"      2026-11-26  r  skill  direct  ask  no setup-call"*) pass "nudge block shows";; *) fail "nudge block: $OUT";; esac
+sline n1 '{"t":"setup-call","ts":"2026-11-26T10:05:00Z","repo":"r"}'
+OUT="$(WL report)"
+case "$OUT" in *"Fixed but recurring:"*) fail "followed nudge still blocked: $OUT";; *) pass "a followed nudge leaves the block";; esac
+
+# T14. Ignored, open and fixed decorations.
+sroot
+sfail s1 2026-11-11T10:00:00Z git "fatal: not a git repository" alpha
+sfail s2 2026-11-12T10:00:00Z git "fatal: not a git repository" beta
+sfail s3 2026-11-12T10:00:00Z make "boom"
+WL mark ig ignored --note noise --match fatal >/dev/null
+OUT="$(WL report)"
+case "$OUT" in *"hidden: 1 ignored") pass "ignored is the last hidden reason";; *) fail "ignored footer: $OUT";; esac
+printf '%s\n' "$OUT" | grep -q "not a git" && fail "ignored row shown" || pass "an ignored entry hides its row"
+OUT="$(WL report --all)"
+case "$OUT" in *"hidden(ignored)"*) pass "--all shows hidden(ignored)";; *) fail "--all: $OUT";; esac
+WL mark op open --match boom >/dev/null
+case "$(WL report)" in *"boom  ledger(op:open)"*) pass "an open entry tags its row";; *) fail "open tag: $(WL report)";; esac
+WL mark op fixed --fixed-on 2026-11-20 >/dev/null
+case "$(WL report)" in *"boom  ledger(op:fixed)"*) pass "a fixed entry with no after-fix session tags the row";; *) fail "fixed tag: $(WL report)";; esac
+
+# T15. The later entry wins.
+sroot
+sfail s1 2026-11-11T10:00:00Z make "boom"
+WL mark aa open --match boom >/dev/null
+WL mark bb open --match 'boo' >/dev/null
+case "$(WL report)" in *"ledger(bb:open)"*) pass "the entry written later supplies the tag";; *) fail "later wins: $(WL report)";; esac
+sroot
+sfail s1 2026-11-11T10:00:00Z make "boom"
+WL mark bb open --match 'boo' >/dev/null
+WL mark aa open --match boom >/dev/null
+case "$(WL report)" in *"ledger(aa:open)"*) pass "the other order flips the tag";; *) fail "later wins 2: $(WL report)";; esac
+
+# T16. A bad regex and an unreadable ledger.
+sroot
+sfail s1 2026-11-11T10:00:00Z make "boom"
+WL mark ok open --match boom >/dev/null
+echo '{"slug":"bad","kind":"sig","match":"(","status":"open","ts":"2026-11-26T10:00:00Z"}' >> "$ROOT/ledger.jsonl"
+OUT="$(WL report)"; RC=$?
+[ "$RC" = 0 ] && [ "${OUT##*$'\n'}" = "ledger: 1 entries skipped (bad regex: bad)" ] && pass "a bad regex is skipped and reported" || fail "bad regex: rc=$RC $OUT"
+chmod 000 "$ROOT/ledger.jsonl"
+OUT="$(WL report 2>&1)"; RC=$?
+chmod 600 "$ROOT/ledger.jsonl"
+[ "$RC" = 0 ] && [ "${OUT##*$'\n'}" = "ledger: unreadable" ] && pass "an unreadable ledger is reported" || fail "unreadable: rc=$RC $OUT"
+
 harness_teardown
 exit $((FAILURES > 0))
