@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+printf 'launchctl %s\n' "$*" >> "$WARDEN_STUB_LOG"
+if [ "${1:-}" = kickstart ] && [ -n "${WARDEN_STUB_KICKSTART_CMD:-}" ]; then
+  bash -c "$WARDEN_STUB_KICKSTART_CMD"
+fi
+exit "${WARDEN_STUB_LAUNCHCTL_EXIT:-0}"

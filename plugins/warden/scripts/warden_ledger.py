@@ -5,9 +5,12 @@ warden-lesson loads this file by path, only inside the ledger commands. It sets 
 import datetime
 import json
 import os
+import plistlib
 import re
+import shutil
 import subprocess
 import sys
+import time
 
 WL = None  # Set by warden-lesson's _ledger() before any function here runs.
 
@@ -298,6 +301,16 @@ def _print_matches(line):
 
 KEEP_REPORTS = 12
 STALE_DAYS = 8
+LABEL = "com.warden.lesson-weekly"
+TEST_MARKER = "test-notify"
+TEST_MAX_AGE = 300
+PLIST_TEMPLATE = {
+    "Label": LABEL,
+    "ProgramArguments": [],
+    "StartCalendarInterval": {"Weekday": 1, "Hour": 9, "Minute": 15},
+    "StandardErrorPath": "",
+    "RunAtLoad": False,
+}
 
 
 def now():
@@ -334,7 +347,26 @@ def _plural(n, one, many):
     return "%d %s" % (n, one if n == 1 else many)
 
 
+def _test_mode():
+    """Handle the test-notify marker. Return an exit code for a test run, or None for a normal run."""
+    marker = os.path.join(weekly_dir(), TEST_MARKER)
+    try:
+        age = time.time() - os.stat(marker).st_mtime
+    except OSError:
+        return None
+    try:
+        os.remove(marker)
+    except OSError:
+        pass
+    if age >= TEST_MAX_AGE:
+        return None
+    return 0 if notify("Test notification from schedule install.") == 0 else 1
+
+
 def weekly_cmd(args):
+    test = _test_mode()
+    if test is not None:
+        return test
     view = ledger_view(False)
     text = render_report(view)
     when = now()
@@ -399,5 +431,162 @@ def _weekly_line():
     return line + (" STALE" if stale else "")
 
 
+def plist_path():
+    folder = os.environ.get("WARDEN_LAUNCH_AGENTS") or os.path.expanduser("~/Library/LaunchAgents")
+    return os.path.join(folder, LABEL + ".plist")
+
+
+def _target():
+    return "gui/%d/%s" % (os.getuid(), LABEL)
+
+
+def _launchctl(*argv):
+    """Run launchctl. Return (exit code, combined output); 127 when it is missing."""
+    try:
+        r = subprocess.run(["launchctl"] + list(argv), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           universal_newlines=True, timeout=60)
+    except FileNotFoundError:
+        return 127, "launchctl: not found"
+    except (OSError, subprocess.SubprocessError) as e:
+        return 1, str(e)
+    return r.returncode, r.stdout.strip()
+
+
+def _refuse(message):
+    print("schedule: refused, " + message)
+    return 2
+
+
+def _confirm():
+    folder = weekly_dir()
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    _write_atomic(os.path.join(folder, "schedule.json"), json.dumps({"confirmed": now().isoformat(timespec="seconds")}))
+
+
+def _install():
+    bin_dir = os.path.expanduser("~/.claude/bin")
+    if not os.path.exists(bin_dir):
+        return _refuse("~/.claude/bin does not exist")
+    checkout = os.path.dirname(os.path.realpath(bin_dir))
+    if os.path.isfile(os.path.join(checkout, ".git")):
+        return _refuse("%s is a git worktree; install from the main checkout" % checkout)
+    script = os.path.join(checkout, "plugins", "warden", "scripts", "warden-lesson")
+    if not os.path.exists(script):
+        return _refuse("%s does not exist" % script)
+    python = shutil.which("python3")
+    if python is None:
+        return _refuse("no python3 on PATH")
+    folder = weekly_dir()
+    data = dict(PLIST_TEMPLATE)
+    data["ProgramArguments"] = [python, "-I", script, "weekly"]
+    data["StandardErrorPath"] = os.path.join(folder, "launchd.err")
+    plist = plist_path()
+    try:
+        os.makedirs(os.path.dirname(plist), exist_ok=True)
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        tmp = plist + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(plistlib.dumps(data))
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, plist)
+    except OSError as e:
+        print("schedule: write failed: %s" % (e.strerror or e))
+        return 1
+    uid = os.getuid()
+    _launchctl("bootout", _target())
+    code, out = _launchctl("bootstrap", "gui/%d" % uid, plist)
+    if code != 0:
+        print(out)
+        return 1
+    marker = os.path.join(folder, TEST_MARKER)
+    try:
+        fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.close(fd)
+    except OSError as e:
+        print("schedule: write failed: %s" % (e.strerror or e))
+        return 1
+    code, out = _launchctl("kickstart", _target())
+    if code != 0:
+        _remove(marker)
+        print(out)
+        return 1
+    limit = int(os.environ.get("WARDEN_KICKSTART_WAIT", "10"))
+    deadline = time.time() + limit
+    while os.path.exists(marker) and time.time() < deadline:
+        time.sleep(0.2)
+    if os.path.exists(marker):
+        _remove(marker)
+        print("schedule: the launchd agent did not run the test within %d seconds. Check %s." % (
+            limit, os.path.join(folder, "launchd.err")))
+        return 1
+    print("plist: %s\nscript: %s\ninterpreter: %s\nnext run: Monday 09:15" % (plist, script, python))
+    if not sys.stdin.isatty():
+        print("Run warden-lesson schedule confirm after you see the test notification.")
+        return 0
+    try:
+        answer = input("Did you see the test notification? [y/N] ")
+    except EOFError:
+        answer = ""
+    if answer.strip().lower() in ("y", "yes"):
+        _confirm()
+    else:
+        print("Notifications from osascript appear under Script Editor. Allow them in System Settings > "
+              "Notifications > Script Editor. If Script Editor is not listed, open Script Editor, run: "
+              'display notification "test", and allow the prompt. Then run: warden-lesson schedule confirm')
+    return 0
+
+
+def _remove(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _uninstall():
+    plist = plist_path()
+    if not os.path.exists(plist):
+        print("schedule: not installed")
+        return 0
+    _launchctl("bootout", _target())
+    _remove(plist)
+    print("schedule: uninstalled")
+    return 0
+
+
+def schedule_cmd(args):
+    try:
+        if args.action == "install":
+            return _install()
+        if args.action == "uninstall":
+            return _uninstall()
+        _confirm()
+        return 0
+    except OSError as e:
+        print("schedule: %s failed: %s" % (args.action, e.strerror or e), file=sys.stderr)
+        return 1
+
+
+def _schedule_line():
+    try:
+        with open(plist_path(), "rb") as f:
+            argv = plistlib.load(f)["ProgramArguments"]
+        python, script = str(argv[0]), str(argv[2])
+    except FileNotFoundError:
+        return "schedule: not installed"
+    except (OSError, ValueError, KeyError, IndexError, TypeError, plistlib.InvalidFileException):
+        return "schedule: broken (plist unreadable)"
+    if not os.path.exists(script):
+        return "schedule: broken (script missing: %s)" % script
+    if not os.path.exists(python):
+        return "schedule: broken (interpreter missing: %s)" % python
+    try:
+        with open(os.path.join(weekly_dir(), "schedule.json"), encoding="utf-8") as f:
+            confirmed = bool(json.load(f).get("confirmed"))
+    except (OSError, ValueError, AttributeError):
+        confirmed = False
+    return "schedule: installed, Monday 09:15" + ("" if confirmed else ", notification unconfirmed")
+
+
 def status_lines():
-    return [_weekly_line()]
+    return [_weekly_line(), _schedule_line()]

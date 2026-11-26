@@ -333,5 +333,93 @@ BEFORE="$(outside)"
 WL weekly; WL status >/dev/null
 [ "$(outside)" = "$BEFORE" ] && pass "weekly and status leave everything outside weekly/ unchanged" || fail "weekly wrote outside weekly/"
 
+# Schedule tests. Every one uses the stubs, a fake main checkout and a plist folder inside the harness.
+schedsetup() {
+  sroot
+  rm -rf "$HARNESS_TMP/co" "$HARNESS_TMP/agents"
+  mkdir -p "$HARNESS_TMP/co/.git" "$HARNESS_TMP/co/bin" "$HARNESS_TMP/co/plugins/warden/scripts" "$HOME/.claude"
+  CO="$(cd -P "$HARNESS_TMP/co" && pwd)"
+  cp "$REPO_DIR/plugins/warden/scripts/warden-lesson" "$REPO_DIR/plugins/warden/scripts/warden_ledger.py" "$CO/plugins/warden/scripts/"
+  rm -f "$HOME/.claude/bin"; ln -s "$CO/bin" "$HOME/.claude/bin"
+  CSCRIPT="$CO/plugins/warden/scripts/warden-lesson"
+  PLIST="$HARNESS_TMP/agents/com.warden.lesson-weekly.plist"
+  export WARDEN_LAUNCH_AGENTS="$HARNESS_TMP/agents" WARDEN_KICKSTART_WAIT=2
+  export WARDEN_STUB_KICKSTART_CMD="python3 -I $CSCRIPT weekly"
+  clearlog
+}
+plist_has() { python3 -I -c 'import plistlib,sys; d=plistlib.load(open(sys.argv[1],"rb")); '"$2" "$PLIST"; }
+CWL() { python3 -I "$CSCRIPT" "$@"; }
+
+# T22. Install writes the plist, loads it and sends the test notification through launchd.
+schedsetup
+OUT="$(CWL schedule install < /dev/null 2>&1)"; RC=$?
+PY3="$(command -v python3)"
+if [ $RC -eq 0 ] && [ -f "$PLIST" ] && plist_has x 'assert d["ProgramArguments"]==["'"$PY3"'","-I","'"$CSCRIPT"'","weekly"], d["ProgramArguments"]; assert d["StartCalendarInterval"]=={"Weekday":1,"Hour":9,"Minute":15}; assert d["Label"]=="com.warden.lesson-weekly"; assert d["RunAtLoad"] is False'; then pass "install writes the plist"; else fail "T22 plist: rc $RC $OUT"; fi
+UIDN="$(id -u)"
+LOG="$(grep '^launchctl\|^osascript' "$WARDEN_STUB_LOG")"
+if [ "$(printf '%s\n' "$LOG" | sed -n 1p)" = "launchctl bootout gui/$UIDN/com.warden.lesson-weekly" ] && [ "$(printf '%s\n' "$LOG" | sed -n 2p)" = "launchctl bootstrap gui/$UIDN $PLIST" ] && [ "$(printf '%s\n' "$LOG" | sed -n 3p)" = "launchctl kickstart gui/$UIDN/com.warden.lesson-weekly" ] && case "$(printf '%s\n' "$LOG" | sed -n 4p)" in osascript*"Test notification"*) true;; *) false;; esac && [ "$(oslines)" = 1 ] && [ "$(printf '%s\n' "$LOG" | wc -l | tr -d ' ')" = 4 ]; then pass "install runs bootout, bootstrap, kickstart, then one notification"; else fail "T22 log: $(cat "$WARDEN_STUB_LOG")"; fi
+if [ ! -e "$ROOT/weekly/test-notify" ] && ! ls "$ROOT"/weekly/report-*.txt >/dev/null 2>&1 && [ ! -e "$ROOT/weekly/last-run" ]; then pass "the test run leaves no marker, report or last-run"; else fail "T22 files: $(ls "$ROOT/weekly")"; fi
+clearlog
+CWL schedule install < /dev/null >/dev/null 2>&1
+if [ "$(ls "$HARNESS_TMP/agents" | wc -l | tr -d ' ')" = 1 ] && grep -q '^launchctl bootout' "$WARDEN_STUB_LOG"; then pass "a second install keeps one plist and boots out first"; else fail "T22 second install"; fi
+
+# T22b. The agent never runs the test.
+schedsetup
+unset WARDEN_STUB_KICKSTART_CMD
+START=$SECONDS
+OUT="$(CWL schedule install < /dev/null 2>&1)"; RC=$?
+ELAPSED=$((SECONDS - START))
+if [ $RC -eq 1 ] && [ $ELAPSED -ge 2 ] && [ $ELAPSED -le 6 ] && case "$OUT" in *"did not run the test"*) true;; *) false;; esac && [ "$(oslines)" = 0 ] && [ ! -e "$ROOT/weekly/test-notify" ]; then pass "an agent that does not run exits 1 and removes the marker"; else fail "T22b: rc $RC after ${ELAPSED}s: $OUT"; fi
+
+# T22c. The marker decides the test mode by its age.
+schedsetup
+mkdir -p "$ROOT/weekly"; : > "$ROOT/weekly/test-notify"; touch -t 202001010000 "$ROOT/weekly/test-notify"
+WL weekly >/dev/null
+if ls "$ROOT"/weekly/report-*.txt >/dev/null 2>&1 && [ -f "$ROOT/weekly/last-run" ] && [ "$(oslines)" = 0 ] && [ ! -e "$ROOT/weekly/test-notify" ]; then pass "a stale marker is deleted and the weekly run goes on"; else fail "T22c stale: $(ls "$ROOT/weekly")"; fi
+rm -f "$ROOT"/weekly/report-*.txt "$ROOT/weekly/last-run"; clearlog
+: > "$ROOT/weekly/test-notify"
+WL weekly >/dev/null; RC=$?
+if [ $RC -eq 0 ] && [ "$(oslines)" = 1 ] && grep -q 'Test notification' "$WARDEN_STUB_LOG" && ! ls "$ROOT"/weekly/report-*.txt >/dev/null 2>&1 && [ ! -e "$ROOT/weekly/last-run" ] && [ ! -e "$ROOT/weekly/test-notify" ]; then pass "a fresh marker sends the test notification only"; else fail "T22c fresh: rc $RC $(ls "$ROOT/weekly")"; fi
+
+# T23. Refusals.
+schedsetup
+rmdir "$CO/.git"; : > "$CO/.git"
+OUT="$(CWL schedule install < /dev/null 2>&1)"; RC=$?
+if [ $RC -eq 2 ] && case "$OUT" in *"is a git worktree"*) true;; *) false;; esac && [ ! -e "$PLIST" ]; then pass "install from a worktree is refused"; else fail "T23 worktree: rc $RC $OUT"; fi
+schedsetup
+rm -f "$HOME/.claude/bin"
+OUT="$(CWL schedule install < /dev/null 2>&1)"; RC=$?
+[ $RC -eq 2 ] && [ ! -e "$PLIST" ] && pass "install without ~/.claude/bin is refused" || fail "T23 no bin: rc $RC $OUT"
+
+# T24. Confirmation.
+schedsetup
+OUT="$(CWL schedule install < /dev/null 2>&1)"
+case "$OUT" in *"schedule confirm"*) pass "install without a terminal points to schedule confirm";; *) fail "T24 hint: $OUT";; esac
+case "$(CWL status | grep '^schedule:')" in *"notification unconfirmed") pass "status shows unconfirmed";; *) fail "T24 status: $(CWL status)";; esac
+CWL schedule confirm; RC=$?
+L="$(CWL status | grep '^schedule:')"
+[ $RC -eq 0 ] && [ "$L" = "schedule: installed, Monday 09:15" ] && pass "confirm makes status confirmed" || fail "T24 confirm: rc $RC '$L'"
+schedsetup
+(sleep 1; printf 'y\n'; sleep 1) | script -q /dev/null python3 -I "$CSCRIPT" schedule install >/dev/null 2>&1
+grep -q '"confirmed"' "$ROOT/weekly/schedule.json" 2>/dev/null && pass "answering y at a terminal confirms" || fail "T24 tty: $(cat "$ROOT/weekly/schedule.json" 2>&1)"
+
+# T25. Uninstall.
+schedsetup
+CWL schedule install < /dev/null >/dev/null 2>&1; clearlog
+OUT="$(CWL schedule uninstall 2>&1)"; RC=$?
+if [ $RC -eq 0 ] && [ ! -e "$PLIST" ] && grep -q '^launchctl bootout' "$WARDEN_STUB_LOG" && [ -d "$ROOT/weekly" ]; then pass "uninstall removes the plist and keeps weekly/"; else fail "T25: rc $RC $OUT"; fi
+OUT="$(CWL schedule uninstall 2>&1)"; RC=$?
+[ $RC -eq 0 ] && [ "$OUT" = "schedule: not installed" ] && pass "a second uninstall says not installed" || fail "T25b: rc $RC $OUT"
+
+# T26 (schedule part).
+schedsetup
+[ "$(CWL status | grep '^schedule:')" = "schedule: not installed" ] && pass "status says schedule: not installed" || fail "T26 not installed"
+CWL schedule install < /dev/null >/dev/null 2>&1
+mv "$CSCRIPT" "$CSCRIPT.off"
+case "$(WL status | grep '^schedule:')" in "schedule: broken (script missing: $CSCRIPT)") pass "status reports a missing script";; *) fail "T26 script: $(WL status | grep '^schedule:')";; esac
+mv "$CSCRIPT.off" "$CSCRIPT"
+python3 -I -c 'import plistlib,sys; p=sys.argv[1]; d=plistlib.load(open(p,"rb")); d["ProgramArguments"][0]="/nonexistent/python3"; plistlib.dump(d,open(p,"wb"))' "$PLIST"
+case "$(CWL status | grep '^schedule:')" in "schedule: broken (interpreter missing: /nonexistent/python3)") pass "status reports a missing interpreter";; *) fail "T26 interp: $(CWL status | grep '^schedule:')";; esac
+
 harness_teardown
 exit $((FAILURES > 0))
