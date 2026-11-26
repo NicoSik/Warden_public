@@ -1,6 +1,6 @@
 # Spec: lessons-ledger-weekly-report
 
-Intent: `intent.md`. Date: 2026-11-26. Status: draft.
+Intent: `intent.md`. Date: 2026-11-26. Status: approved.
 
 ## Summary
 
@@ -281,6 +281,10 @@ and a fixed `TZ`. PATH stubs in `tests/stubs/` replace `osascript` and `launchct
 live in `tests/warden_ledger.sh`, which `tests/run.sh` calls.
 
 **Measures after the merge.** These come from the intent. Nicolai reads them, not a test.
-- About 2026-12-10, `status` shows the time of a real Monday run.
-- The notification path fires at least once before 2026-12-10.
+- The test notification at `schedule install` and Nicolai's confirmation (REQ-9.7 to
+  REQ-9.10) cover the measure "the notification path fires at least once".
+- About 2026-12-10, `status` shows two real Monday runs.
 - Every notification is a real recurrence or a new flagged signature.
+- One gap remains. The test notification comes from a terminal process, and the weekly
+  notification comes from the launchd agent. If macOS blocks only the second one, `osascript`
+  still exits 0, and `last-run` records no error.
