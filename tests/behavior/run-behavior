@@ -170,8 +170,8 @@ PY
         if [ -e "$scratch/plugins/superpowers/scripts/graphify-setup" ]; then
           # The eval sandbox blocks git, so run on a copy whose graphify-setup is the stub. The scratch arm stays unchanged.
           run_dir="$WORK/arm-$n-$c"
-          cp -R "$scratch" "$run_dir" || { echo "error: could not copy arm for $sha" >&2; exit 2; }
-          cp "$HERE/lib/setup-status-stub" "$run_dir/plugins/superpowers/scripts/graphify-setup" || exit 2
+          cp -R "$scratch" "$run_dir" || { echo "error: could not copy arm for $sha in $c" >&2; exit 2; }
+          cp "$HERE/lib/setup-status-stub" "$run_dir/plugins/superpowers/scripts/graphify-setup" || { echo "error: could not place the setup status stub for $sha in $c" >&2; exit 2; }
           chmod 755 "$run_dir/plugins/superpowers/scripts/graphify-setup"
           RESULT_ARGS+=(--setup-status "$sha:$c=stubbed (ready)")
         else

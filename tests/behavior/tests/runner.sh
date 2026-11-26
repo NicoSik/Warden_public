@@ -419,11 +419,27 @@ grep -q 'Setup status of .* in setup-planning' "$rec17" 2>/dev/null && ok=0
 o17=$("$S17" status 2>"$T/e17"); r17=$?
 ok=1
 [ "$o17" = ready ] && [ "$r17" -eq 0 ] || ok=0
-for args in setup decline ""; do
-  if [ -n "$args" ]; then "$S17" "$args" >/dev/null 2>"$T/e17"; r=$?; else "$S17" >/dev/null 2>"$T/e17"; r=$?; fi
+for args in setup decline "status extra" ""; do
+  if [ -n "$args" ]; then "$S17" $args >/dev/null 2>"$T/e17"; r=$?; else "$S17" >/dev/null 2>"$T/e17"; r=$?; fi
   [ "$r" -ne 0 ] && grep -qxF 'stub: only status is supported' "$T/e17" || ok=0
 done
 [ "$ok" -eq 1 ] && pass "17e stub prints ready for status, refuses the rest" || fail "17e stub behaviour wrong (out=$o17 rc=$r17)"
+
+# 17g. the eval runs inside the arm copy for a0f4807 read-order cases, and in the scratch arm otherwise
+ok=1
+for arm in 1 2; do
+  for c in read-order read-order-heldout setup-planning; do
+    d=$(snapfor "$arm" "$c") || { ok=0; continue; }
+    cwd=$(cat "$T/snap/cwd-${d##*call-}" 2>/dev/null); base=$(basename "$cwd")
+    if [ "$arm" = 2 ] && [ "$c" != setup-planning ]; then
+      [ "$base" = "arm-2-$c" ] || ok=0
+    else
+      case "$base" in arm-[0-9]) ;; *) ok=0 ;; esac
+    fi
+  done
+done
+[ "$ok" -eq 1 ] && pass "17g eval cwd is the arm copy for a0f4807 read-order, the scratch arm otherwise" || fail "17g eval cwd wrong: $(cat "$T"/snap/cwd-* 2>&1 | tr "
+" " ")"
 
 [ "$(evals)" -eq 6 ] && pass "17f six evals, copies add no calls" || fail "17f evals=$(evals), expected 6"
 
