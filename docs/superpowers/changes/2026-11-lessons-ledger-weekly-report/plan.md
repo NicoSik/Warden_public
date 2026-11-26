@@ -267,7 +267,8 @@ Test command: `bash tests/warden_ledger.sh && bash tests/warden_lessons.sh`
 **Interfaces:**
 - Consumes: `notify(message) -> int`, `weekly_dir()`, `status_lines()`.
 - Produces, in `warden_ledger.py`: `schedule_cmd(args) -> int`, `LABEL = "com.warden.lesson-weekly"`, `plist_path() -> str` (`<WARDEN_LAUNCH_AGENTS or ~/Library/LaunchAgents>/com.warden.lesson-weekly.plist`).
-- Produces, in `tests/stubs/launchctl`: a bash script that appends `launchctl <args>` to `$WARDEN_STUB_LOG` and exits with `${WARDEN_STUB_LAUNCHCTL_EXIT:-0}`.
+- Produces, in `tests/stubs/launchctl`: a bash script that appends `launchctl <args>` to `$WARDEN_STUB_LOG`. When its first argument is `kickstart` and `$WARDEN_STUB_KICKSTART_CMD` is set, it runs that command with `bash -c`, the way launchd would run the job. It exits with `${WARDEN_STUB_LAUNCHCTL_EXIT:-0}`.
+- Produces, in `warden_ledger.py`: `TEST_MARKER = "test-notify"` (a file in `weekly_dir()`), `TEST_MAX_AGE = 300` seconds, and the wait limit `int(os.environ.get("WARDEN_KICKSTART_WAIT", "10"))` seconds.
 
 **Brief:** Install and remove the launchd agent safely, and report its state in `status`.
 
@@ -278,12 +279,20 @@ Test command: `bash tests/warden_ledger.sh && bash tests/warden_lessons.sh`
 4. Let `python = shutil.which("python3")`. Do not resolve it. If it is None, print `schedule: refused, no python3 on PATH` and exit 2.
 5. Build the plist from a template string in the module, with `plistlib.dumps`: `Label`, `ProgramArguments` = `[python, "-I", script, "weekly"]`, `StartCalendarInterval` = `{"Weekday": 1, "Hour": 9, "Minute": 15}`, `StandardErrorPath` = `<weekly_dir()>/launchd.err`, `RunAtLoad` false. Create the plist folder if needed. Write the file with mode 644 through a temporary file and `os.replace`.
 6. Run `launchctl bootout gui/<uid>/com.warden.lesson-weekly`, and ignore its exit code. Then run `launchctl bootstrap gui/<uid> <plist>`. If `bootstrap` fails, print its output and exit 1.
-7. Call `notify("Test notification from schedule install.")`.
+7. Send the test notification through launchd. `launchctl kickstart` runs the job's fixed `ProgramArguments`, so it cannot pass an argument, and a marker file carries the test mode:
+   1. Write `<weekly_dir()>/test-notify` (mode 600, empty).
+   2. Run `launchctl kickstart gui/<uid>/com.warden.lesson-weekly`. If it fails, delete the marker, print its output and exit 1.
+   3. Poll every 0.2 seconds until the marker is gone, up to the wait limit.
+   4. If the marker still exists at the limit, delete it, print `schedule: the launchd agent did not run the test within <N> seconds. Check <weekly_dir()>/launchd.err.` and exit 1.
 8. Print the plist path, the script, the interpreter and `next run: Monday 09:15`.
 9. If `sys.stdin.isatty()`, ask `Did you see the test notification? [y/N] `. On `y` or `yes`, write `schedule.json` as `{"confirmed": "<now ISO>"}`. On any other answer, print: `Notifications from osascript appear under Script Editor. Allow them in System Settings > Notifications > Script Editor. If Script Editor is not listed, open Script Editor, run: display notification "test", and allow the prompt. Then run: warden-lesson schedule confirm`. Exit 0 in both cases.
 10. Without a terminal, print `Run warden-lesson schedule confirm after you see the test notification.` and exit 0.
 
 `schedule confirm` writes `schedule.json` as in step 9 and exits 0.
+
+The test mode in `weekly_cmd`, checked before step 1 of the weekly run:
+1. If `<weekly_dir()>/test-notify` exists and its mtime is less than `TEST_MAX_AGE` seconds before `time.time()`, call `notify("Test notification from schedule install.")`, delete the marker, and return 0 if `notify` returned 0, else 1. Write no report, no `last-run` and no other file.
+2. If the marker exists and is older, delete it and continue with the normal weekly run.
 
 `schedule uninstall`: when the plist does not exist, print `schedule: not installed` and exit 0. Otherwise run `launchctl bootout gui/<uid>/com.warden.lesson-weekly`, ignore its exit code, delete the plist, print `schedule: uninstalled`, and exit 0. Keep the weekly folder.
 
@@ -297,7 +306,10 @@ Test command: `bash tests/warden_ledger.sh && bash tests/warden_lessons.sh`
 Define the `schedule` subparser in `main()` with one positional argument limited to `install`, `uninstall` and `confirm`, and `set_defaults(func=lambda a: _ledger().schedule_cmd(a))`. Change line 2 of `bin/warden-lesson` to `# warden-lesson - the lesson inbox: add, list, report, status, mark, weekly, schedule. Runs the plugin script.`
 
 Tests. Each test builds a fake main checkout in `$HARNESS_TMP/co` with a `.git` folder, `plugins/warden/scripts/warden-lesson` (a copy), and `bin/`. Then it links `$HOME/.claude/bin -> $HARNESS_TMP/co/bin` and sets `WARDEN_LAUNCH_AGENTS=$HARNESS_TMP/agents`.
-- T22: `schedule install < /dev/null` exits 0. The plist has `ProgramArguments` `[<which python3>, "-I", "$HARNESS_TMP/co/plugins/warden/scripts/warden-lesson", "weekly"]`, where the first value is the unresolved path. It has Weekday 1, Hour 9, Minute 15. The stub log shows `launchctl bootout` before `launchctl bootstrap`, and one `osascript` line with `Test notification`. A second install leaves one plist and logs `bootout` again.
+Every install test sets `WARDEN_KICKSTART_WAIT=2` and `WARDEN_STUB_KICKSTART_CMD="python3 -I <the copied script> weekly"`, unless the test says otherwise.
+- T22: `schedule install < /dev/null` exits 0. The plist has `ProgramArguments` `[<which python3>, "-I", "$HARNESS_TMP/co/plugins/warden/scripts/warden-lesson", "weekly"]`, where the first value is the unresolved path. It has Weekday 1, Hour 9, Minute 15. The stub log shows, in this order, `launchctl bootout`, `launchctl bootstrap`, `launchctl kickstart gui/<uid>/com.warden.lesson-weekly`, and one `osascript` line with `Test notification`. After the install, `weekly/` holds no `test-notify`, no `report-*.txt` and no `last-run`. A second install leaves one plist and logs `bootout` again.
+- T22b: without `WARDEN_STUB_KICKSTART_CMD`, install exits 1 after about 2 seconds, prints `did not run the test`, logs no `osascript` line, and leaves no `test-notify` file.
+- T22c: create `weekly/test-notify` with an mtime 10 minutes back (`touch -t`). `weekly` writes a report file and `last-run`, sends no test notification, and deletes the marker. With a fresh marker, `weekly` sends the test notification and writes no report file and no `last-run`.
 - T23: with `.git` as a file in the checkout, install exits 2, the message holds `is a git worktree`, and no plist exists. Without `$HOME/.claude/bin`, install exits 2.
 - T24: install with stdin from `/dev/null` prints `schedule confirm`, and `status` shows `notification unconfirmed`. `schedule confirm` then makes `status` show `schedule: installed, Monday 09:15`. With a terminal: `printf 'y\n' | script -q /dev/null <cmd> schedule install` makes `schedule.json` hold `confirmed`.
 - T25: uninstall removes the plist, logs `launchctl bootout`, and keeps `weekly/`. A second uninstall prints `schedule: not installed` and exits 0.
@@ -308,9 +320,9 @@ Test command: `bash tests/warden_ledger.sh && bash tests/no_machine_content.sh &
 
 **Steps:**
 - [ ] Write the `launchctl` stub and make it executable.
-- [ ] Write T22, T23, T24, T25 and the schedule part of T26.
+- [ ] Write T22, T22b, T22c, T23, T24, T25 and the schedule part of T26.
 - [ ] Run `bash tests/warden_ledger.sh` and see them fail.
-- [ ] Write `LABEL`, `plist_path`, `schedule_cmd` and the `schedule:` status line.
+- [ ] Write `LABEL`, `plist_path`, `schedule_cmd`, the test mode in `weekly_cmd`, and the `schedule:` status line.
 - [ ] Register `schedule`, and change the comment in `bin/warden-lesson`.
 - [ ] Run the test command and see every test pass.
 - [ ] Commit: `feat: add warden-lesson schedule for the Monday report`.
@@ -397,8 +409,9 @@ After the last wave: the final review, the fix wave and the scoped re-review, th
 
 ## Spec points this plan reads differently
 
-- **P1. REQ-7.1 names a lock that does not exist.** `write_line` holds no lock. It writes each line with one `O_APPEND` write of at most 512 bytes. The plan reuses `write_line` unchanged. Proposed ruling: REQ-7.1 reads "with the single append write of the inbox writer".
-- **P2. The secret scrub and the 512-byte cap can change a ledger line.** The plan makes `mark` refuse when the scrub or the cap changes `slug`, `kind`, `match`, `status`, `pr` or `fixed_on`, and warn when only `note` changes. This adds refusal cases under REQ-1.7. The spec does not name them.
+- **P1 (accepted 2026-11-26). REQ-7.1 names a lock that does not exist.** `write_line` holds no lock. It writes each line with one `O_APPEND` write of at most 512 bytes. The plan reuses `write_line` unchanged. Proposed ruling: REQ-7.1 reads "with the single append write of the inbox writer".
+- **P2 (accepted 2026-11-26). The secret scrub and the 512-byte cap can change a ledger line.** The plan makes `mark` refuse when the scrub or the cap changes `slug`, `kind`, `match`, `status`, `pr` or `fixed_on`, and warn when only `note` changes. This adds refusal cases under REQ-1.7. The spec does not name them.
+- **P4. Ruling 2026-11-26: the test notification goes through launchd.** REQ-9.7 and REQ-9.14 to REQ-9.17 are in the spec. Task 4 carries them.
 - **P3. The spec's open question has an answer.** `osascript` notifications appear under Script Editor in System Settings > Notifications. The `N` answer in Task 4 names it. This comes from forum reports and a Claude Code issue, not from Apple documentation.
 
 ## Risks, worst first
@@ -407,8 +420,9 @@ After the last wave: the final review, the fix wave and the scoped re-review, th
 2. **The report output changes for an empty ledger.** Other tests and Nicolai's habits read that output. Task 2 skips the module when the ledger is missing or empty, and T10 compares bytes against the script from commit 49faf2b.
 3. **The hook loads the new module.** That costs time on every tool call. T1 checks `sys.modules` and the import trace. The existing timing tests stay in place.
 4. **The agent points at a path that later disappears.** The worktree refusal, the unresolved `python3` and the two `broken` status lines cover it. `STALE` shows a missed week.
-5. **Notifications are blocked without an error.** `osascript` exits 0. The test notification and the confirmation catch a block at install time. A block that appears later stays invisible until a flagged week passes with no notification.
-6. **Session days depend on the time zone.** Tests set `TZ=Europe/Oslo` and use timestamps close to midnight UTC (T12).
+5. **Notifications are blocked without an error.** `osascript` exits 0. The test notification goes through the launchd agent, so the confirmation covers the weekly path at install time. A block that appears later stays invisible until a flagged week passes with no notification.
+6. **A leftover test marker turns a Monday run into a test run.** The 5-minute age limit and T22c prevent it.
+7. **Session days depend on the time zone.** Tests set `TZ=Europe/Oslo` and use timestamps close to midnight UTC (T12).
 
 The task with the most risk is Task 2. It changes the report path that all existing report tests read, and it holds the matching and the after-fix rule.
 

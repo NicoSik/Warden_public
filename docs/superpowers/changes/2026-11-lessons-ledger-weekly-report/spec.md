@@ -60,6 +60,10 @@ questions, 1 open question) and the four design sections approved on 2026-11-26.
     that another entry matches. The warning names that entry. The write still happens.
   - **REQ-1.11** `mark <slug> --history` MUST print every ledger line for the slug, oldest first.
   - **REQ-1.12** `mark --list` MUST print the current entry for each slug.
+  - **REQ-1.13** The `mark` command MUST refuse a line when the secret scrub or the 512-byte
+    cap changes a field other than the note. (Ruling P2, 2026-11-26.)
+  - **REQ-1.14** The `mark` command MUST print a warning when the secret scrub or the cap
+    changes only the note. The write still happens. (Ruling P2, 2026-11-26.)
   *Proof: T4, T5, T6 and T7 in the ledger tests.*
   *Source: outcome paragraphs 1 and 2. Design section 1.*
 
@@ -141,7 +145,8 @@ is something new to act on.
 
 **REQ-7** Only the `mark` command MUST write the ledger, and only by appending.
   - **REQ-7.1** The `mark` command MUST create the ledger with mode `0600` and MUST write
-    each line under the lock that the inbox writer uses.
+    each line with the single append write of the inbox writer. (Ruling P1, 2026-11-26.
+    The inbox writer holds no lock.)
   - **REQ-7.2** The `mark` command MUST pass the note through the secret scrub of the inbox.
   - **REQ-7.3** Retention MUST NOT delete or change the ledger, at any file age.
   - **REQ-7.4** The `report`, `weekly` and `status` commands MUST NOT change the ledger or any
@@ -176,7 +181,9 @@ is something new to act on.
     every Monday at 09:15.
   - **REQ-9.6** `schedule install` MUST unload a loaded agent before it loads the new plist, so
     a second install leaves one agent.
-  - **REQ-9.7** `schedule install` MUST send one test notification.
+  - **REQ-9.7** After the bootstrap, `schedule install` MUST send one test notification
+    through the launchd agent with `launchctl kickstart`, not from the terminal.
+    (Ruling, 2026-11-26.)
   - **REQ-9.8** When stdin is a terminal, `schedule install` MUST ask whether the test
     notification appeared, and a `y` MUST record the confirmation.
   - **REQ-9.9** When stdin is not a terminal, `schedule install` MUST print the
@@ -186,7 +193,14 @@ is something new to act on.
     weekly folder.
   - **REQ-9.12** `schedule uninstall` MUST exit 0 when the plist does not exist.
   - **REQ-9.13** The repository MUST NOT contain a plist or a home path.
-  *Proof: T22, T23, T24, T25 and T27.*
+  - **REQ-9.14** In the test mode, the agent's run MUST send only the test notification and
+    MUST NOT write a report, `last-run` or any other file.
+  - **REQ-9.15** `schedule install` MUST ask the confirmation question only after the agent
+    ran the test mode.
+  - **REQ-9.16** When the agent does not run the test mode within 10 seconds,
+    `schedule install` MUST exit 1 and say that the agent did not run.
+  - **REQ-9.17** A test-mode request older than 5 minutes MUST NOT stop a normal weekly run.
+  *Proof: T22, T22b, T22c, T23, T24, T25 and T27.*
   *Source: resolved questions on `schedule` and the run time. Design section 3 with the three fixes.*
 
 **REQ-10** After the merge, the ledger MUST hold these four entries, written with `mark`
@@ -239,9 +253,7 @@ REQ-7.2 are privacy measures from the design, not policy skills.
 ## Open questions carried from intent
 
 - The merge-day edge: answered by REQ-3 and REQ-3.1.
-- Still open, for the plan: the app name under which macOS lists `osascript` notifications
-  in System Settings > Notifications. The `N` answer in REQ-9.8 has to name it. The plan
-  checks it on this Mac before anyone writes that text.
+- The app name for `osascript` notifications: answered in the plan. It is Script Editor.
 
 ## Design notes
 
@@ -285,6 +297,8 @@ live in `tests/warden_ledger.sh`, which `tests/run.sh` calls.
   REQ-9.10) cover the measure "the notification path fires at least once".
 - About 2026-12-10, `status` shows two real Monday runs.
 - Every notification is a real recurrence or a new flagged signature.
-- One gap remains. The test notification comes from a terminal process, and the weekly
-  notification comes from the launchd agent. If macOS blocks only the second one, `osascript`
-  still exits 0, and `last-run` records no error.
+- REQ-9.7 sends the test notification through the launchd agent, so the confirmation covers
+  the path that the weekly run uses. A block that macOS adds after the install stays
+  invisible, because `osascript` still exits 0.
+- macOS lists `osascript` notifications under Script Editor in System Settings >
+  Notifications. Sources: forum reports and a Claude Code issue, not Apple documentation.
