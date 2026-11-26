@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+printf 'osascript %s\n' "$*" >> "$WARDEN_STUB_LOG"
+exit "${WARDEN_STUB_OSASCRIPT_EXIT:-0}"

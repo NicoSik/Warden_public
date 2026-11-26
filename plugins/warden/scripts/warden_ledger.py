@@ -6,6 +6,7 @@ import datetime
 import json
 import os
 import re
+import subprocess
 import sys
 
 WL = None  # Set by warden-lesson's _ledger() before any function here runs.
@@ -293,3 +294,110 @@ def _print_matches(line):
     for slug in sorted(m2 for m2, o in matches.items() if m2 != line["slug"]
                        and any(r is x for r in o["rows"] for x in m["rows"])):
         print("mark: warning, also matched by " + slug)
+
+
+KEEP_REPORTS = 12
+STALE_DAYS = 8
+
+
+def now():
+    """Local time, or WARDEN_NOW when it is set."""
+    text = os.environ.get("WARDEN_NOW")
+    return datetime.datetime.fromisoformat(text) if text else datetime.datetime.now()
+
+
+def weekly_dir():
+    return os.path.join(WL.inbox(), "weekly")
+
+
+def notify(message):
+    """Show a macOS notification. Return the exit code, or 127 when osascript is missing."""
+    cmd = ["osascript", "-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)",
+           "-e", "end run", "Warden lessons", message]
+    try:
+        return subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30).returncode
+    except FileNotFoundError:
+        return 127
+    except (OSError, subprocess.SubprocessError):
+        return 1
+
+
+def _write_atomic(path, text):
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def _plural(n, one, many):
+    return "%d %s" % (n, one if n == 1 else many)
+
+
+def weekly_cmd(args):
+    view = ledger_view(False)
+    text = render_report(view)
+    when = now()
+    folder = weekly_dir()
+    report = os.path.join(folder, "report-%s.txt" % when.date())
+    errors = []
+    try:
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        _write_atomic(report, text + "\n")
+    except OSError as e:
+        errors.append("report write failed: %s" % (e.strerror or e))
+    recurring, unack = len(view["recurring"]), view["unacknowledged"]
+    notified = False
+    if recurring + unack > 0:
+        home = os.path.expanduser("~")
+        shown = "~" + report[len(home):] if report.startswith(home.rstrip("/") + "/") else report
+        message = "%s recurring, %s without an entry.\n%s" % (
+            _plural(recurring, "fixed entry", "fixed entries"), _plural(unack, "flagged signature", "flagged signatures"), shown)
+        code = notify(message)
+        notified = code == 0
+        if not notified:
+            errors.append("notify failed: %d" % code)
+    try:
+        names = sorted(n for n in os.listdir(folder) if re.match(r"^report-.*\.txt$", n))
+        for n in names[:-KEEP_REPORTS]:
+            os.remove(os.path.join(folder, n))
+    except OSError:
+        pass
+    last = {"ts": when.isoformat(timespec="seconds"), "report": report, "recurring": recurring,
+            "unacknowledged": unack, "notified": notified}
+    if errors:
+        last["error"] = "; ".join(errors)
+    try:
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        _write_atomic(os.path.join(folder, "last-run"), json.dumps(last))
+    except OSError as e:
+        print("weekly: last-run write failed: %s" % (e.strerror or e), file=sys.stderr)
+        return 1
+    return 1 if errors else 0
+
+
+def _weekly_line():
+    try:
+        with open(os.path.join(weekly_dir(), "last-run"), encoding="utf-8") as f:
+            raw = f.read()
+    except FileNotFoundError:
+        return "weekly: never run"
+    except OSError:
+        return "weekly: last-run unreadable"
+    try:
+        d = json.loads(raw)
+        ts = datetime.datetime.fromisoformat(d["ts"])
+        r, u, sent = int(d["recurring"]), int(d["unacknowledged"]), bool(d["notified"])
+        stale = (now() - ts) > datetime.timedelta(days=STALE_DAYS)
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return "weekly: last-run unreadable"
+    line = "weekly: last run %s, %s, %d unacknowledged, %s" % (
+        ts.strftime("%Y-%m-%d %H:%M"), _plural(r, "recurring entry", "recurring entries"), u,
+        "notified" if sent else "not notified")
+    if d.get("error"):
+        line += ", error: %s" % d["error"]
+    return line + (" STALE" if stale else "")
+
+
+def status_lines():
+    return [_weekly_line()]

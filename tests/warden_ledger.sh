@@ -239,5 +239,99 @@ OUT="$(WL report 2>&1)"; RC=$?
 chmod 600 "$ROOT/ledger.jsonl"
 [ "$RC" = 0 ] && [ "${OUT##*$'\n'}" = "ledger: unreadable" ] && pass "an unreadable ledger is reported" || fail "unreadable: rc=$RC $OUT"
 
+# ---- Task 3: weekly and the weekly: status line ----
+export WARDEN_NOW=2026-11-30T09:15:00
+oslines() { grep -c '^osascript' "$WARDEN_STUB_LOG"; }
+clearlog() { : > "$WARDEN_STUB_LOG"; }
+lastrun_has() { python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); '"$2" "$ROOT/weekly/last-run"; }
+
+# T17. Nothing to report: the report file and last-run are written, no notification.
+sroot
+sfail s1 2026-11-11T10:00:00Z make "boom"
+clearlog
+WL weekly; RC=$?
+if [ $RC -eq 0 ] && [ -f "$ROOT/weekly/report-2026-11-30.txt" ] && lastrun_has x 'assert d["notified"] is False and d["recurring"]==0 and d["unacknowledged"]==0 and "error" not in d' && [ "$(oslines)" = 0 ]; then pass "weekly with nothing to report writes files and stays quiet"; else fail "T17: rc $RC"; fi
+[ "$(mode_of "$ROOT/weekly")" = 700 ] && pass "weekly folder has mode 700" || fail "weekly mode $(mode_of "$ROOT/weekly")"
+[ "$(cat "$ROOT/weekly/report-2026-11-30.txt")" = "$(WL report)" ] && pass "the weekly file holds the report text" || fail "weekly file differs from report"
+
+# T18. A recurring fixed entry notifies once, with counts and the path only.
+sroot
+sfail s1 2026-11-11T10:00:00Z python "KeyError: 'x'"
+sfail s2 2026-11-12T10:00:00Z python "KeyError: 'y'"
+WL mark ke fixed --pr 11 --fixed-on 2026-11-10 --match KeyError >/dev/null
+clearlog
+WL weekly; RC=$?
+if [ $RC -eq 0 ] && [ "$(oslines)" = 1 ] && grep -q '1 fixed entry recurring, 0 flagged signatures without an entry\.' "$WARDEN_STUB_LOG" && grep -q 'report-2026-11-30\.txt' "$WARDEN_STUB_LOG" && ! grep -q 'KeyError' "$WARDEN_STUB_LOG" && grep -q "^osascript .*Warden lessons" "$WARDEN_STUB_LOG" && lastrun_has x 'assert d["notified"] is True and d["recurring"]==1'; then pass "a recurring entry sends one notification with counts"; else fail "T18: rc $RC log: $(cat "$WARDEN_STUB_LOG")"; fi
+
+# T18b. A session before fixed_on does not recur.
+sroot
+sfail s1 2026-11-11T10:00:00Z python "KeyError: 'x'"
+WL mark ke fixed --fixed-on 2026-11-20 --match KeyError >/dev/null
+clearlog
+WL weekly
+[ "$(oslines)" = 0 ] && pass "a session before the fix gives no notification" || fail "T18b: $(cat "$WARDEN_STUB_LOG")"
+
+# T19. A flagged signature without an entry notifies until it is marked.
+sroot
+for i in 1 2 3; do sfail "s$i" "2026-11-1${i}T10:00:00Z" make "(eval):$i: ==== not found"; done
+clearlog
+WL weekly
+if [ "$(oslines)" = 1 ] && grep -q '1 flagged signature without an entry' "$WARDEN_STUB_LOG" && lastrun_has x 'assert d["unacknowledged"]==1'; then pass "a flagged signature notifies"; else fail "T19: $(cat "$WARDEN_STUB_LOG")"; fi
+WL mark w open --match '^\(eval\):N: \S+ not found$' >/dev/null
+clearlog
+WL weekly
+[ "$(oslines)" = 0 ] && pass "marking the signature stops the notification" || fail "T19 after mark: $(cat "$WARDEN_STUB_LOG")"
+
+# T20. Retention keeps the 12 newest reports and touches nothing else.
+sroot
+mkdir -p "$ROOT/weekly"; chmod 700 "$ROOT/weekly"
+echo '{}' > "$ROOT/weekly/schedule.json"; : > "$ROOT/weekly/launchd.err"
+for d in $(python3 -I -c 'import datetime
+d=datetime.date(2026,11,2)
+print(*[(d+datetime.timedelta(7*i)).isoformat() for i in range(14)])'); do
+  WARDEN_NOW="${d}T09:15:00" WL weekly
+done
+N="$(ls "$ROOT/weekly" | grep -c '^report-.*\.txt$')"
+if [ "$N" = 12 ] && [ ! -e "$ROOT/weekly/report-2026-11-02.txt" ] && [ ! -e "$ROOT/weekly/report-2026-11-09.txt" ] && [ -e "$ROOT/weekly/report-2026-11-16.txt" ] && [ -e "$ROOT/weekly/report-2027-02-01.txt" ] && [ -f "$ROOT/weekly/last-run" ] && [ -f "$ROOT/weekly/schedule.json" ] && [ -f "$ROOT/weekly/launchd.err" ]; then pass "12 reports remain; other weekly files survive"; else fail "T20: $N reports: $(ls "$ROOT/weekly")"; fi
+
+# T21. A failed notification exits 1 and is recorded.
+sroot
+for i in 1 2 3; do sfail "s$i" "2026-11-1${i}T10:00:00Z" make "(eval):$i: ==== not found"; done
+clearlog
+WARDEN_STUB_OSASCRIPT_EXIT=1 WL weekly; RC=$?
+if [ $RC -eq 1 ] && lastrun_has x 'assert d["error"]=="notify failed: 1" and d["notified"] is False' && [ -f "$ROOT/weekly/report-2026-11-30.txt" ]; then pass "a failed notification exits 1 and is recorded"; else fail "T21: rc $RC $(cat "$ROOT/weekly/last-run")"; fi
+NOOSA="$(mktemp -d "$HARNESS_TMP/nobin.XXXXXX")"; ln -s "$(command -v python3)" "$NOOSA/python3"
+OUT="$(PATH="$NOOSA" WL weekly 2>&1)"; RC=$?
+if [ $RC -eq 1 ] && lastrun_has x 'assert d["error"]=="notify failed: 127"'; then pass "no osascript on PATH gives 127"; else fail "127: rc $RC $(cat "$ROOT/weekly/last-run")"; fi
+
+# T26 (weekly part). The weekly: line is line 5; the first four lines stay as before.
+sroot
+sfail s1 2026-11-11T10:00:00Z make "boom"
+OUT="$(WL status)"
+[ "$(printf '%s\n' "$OUT" | sed -n 5p)" = "weekly: never run" ] && pass "status says weekly: never run" || fail "never run: $OUT"
+[ "$(printf '%s\n' "$OUT" | head -4)" = "$(python3 -I "$HARNESS_TMP/ref" status | head -4)" ] && pass "the first four status lines are unchanged" || fail "status head differs"
+WL weekly
+L="$(WL status | sed -n 5p)"
+[ "$L" = "weekly: last run 2026-11-30 09:15, 0 recurring entries, 0 unacknowledged, not notified" ] && pass "status shows the last run" || fail "weekly line: '$L'"
+L="$(WARDEN_NOW=2026-12-09T09:15:00 WL status | sed -n 5p)"
+case "$L" in *" STALE") pass "a run 9 days old is STALE";; *) fail "stale: '$L'";; esac
+L="$(WARDEN_NOW=2026-12-08T09:15:00 WL status | sed -n 5p)"
+case "$L" in *STALE*) fail "8 days is not stale: '$L'";; *) pass "a run 8 days old is not stale";; esac
+for i in 2 3; do sfail "s$i" "2026-11-1${i}T10:00:00Z" make "boom"; done
+WARDEN_STUB_OSASCRIPT_EXIT=1 WL weekly >/dev/null
+L="$(WL status | sed -n 5p)"
+case "$L" in *"1 unacknowledged, not notified, error: notify failed: 1") pass "status shows the error";; *) fail "error line: '$L'";; esac
+echo 'not json' > "$ROOT/weekly/last-run"
+[ "$(WL status | sed -n 5p)" = "weekly: last-run unreadable" ] && pass "an unparseable last-run is reported" || fail "unreadable last-run"
+
+# T9 (rest). weekly and status write nothing outside weekly/.
+sroot
+sfail s1 2026-11-11T10:00:00Z python "KeyError: 'x'"
+WL mark ke fixed --fixed-on 2026-11-10 --match KeyError >/dev/null
+outside() { (cd "$ROOT" && find . -type f -not -path './weekly/*' | sort | while read -r f; do shasum "$f"; done); }
+BEFORE="$(outside)"
+WL weekly; WL status >/dev/null
+[ "$(outside)" = "$BEFORE" ] && pass "weekly and status leave everything outside weekly/ unchanged" || fail "weekly wrote outside weekly/"
+
 harness_teardown
 exit $((FAILURES > 0))
