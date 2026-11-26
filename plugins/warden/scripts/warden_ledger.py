@@ -33,7 +33,7 @@ def _match_compiles(match):
 
 def read_ledger():
     """Read the ledger. The latest line per slug wins."""
-    out = {"entries": {}, "history": {}, "skipped": [], "readable": True}
+    out = {"entries": {}, "history": {}, "skipped": [], "invalid": [], "bad_regex": [], "readable": True}
     path = ledger_path()
     try:
         open(path, encoding="utf-8").close()
@@ -49,9 +49,14 @@ def read_ledger():
         out["entries"].pop(slug, None)  # Dict order follows each slug's latest line.
         out["entries"][slug] = d
         out["history"].setdefault(slug, []).append(d)
-    out["skipped"] = sorted(
-        s for s, d in out["entries"].items()
-        if d.get("kind") == "sig" and not (isinstance(d.get("match"), str) and _match_compiles(d["match"])))
+    for slug, d in out["entries"].items():
+        if d.get("status") not in STATUSES or d.get("kind") not in ("sig", "nudge"):
+            out["invalid"].append(slug)
+        elif d["kind"] == "sig" and not (isinstance(d.get("match"), str) and _match_compiles(d["match"])):
+            out["bad_regex"].append(slug)
+    out["invalid"].sort()
+    out["bad_regex"].sort()
+    out["skipped"] = sorted(out["invalid"] + out["bad_regex"])
     return out
 
 
@@ -111,7 +116,7 @@ def _build(include_hidden):
         slug = winner(lambda m: any(x is r for x in m["rows"]))
         e = by_slug.get(slug)
         if e is None:
-            flagged_unmatched += 1 if r["flagged"] else 0
+            flagged_unmatched += 1 if r["flagged"] and not r["hidden"] else 0
         elif e["status"] in ("fixed", "verified") and _after_fix(e, r["session_names"], days):
             if r["hidden"]:
                 hidden[r["hidden"]] = hidden.get(r["hidden"], 0) - 1
@@ -142,8 +147,10 @@ def _build(include_hidden):
     footer = []
     if not led["readable"]:
         footer.append("ledger: unreadable")
-    if led["skipped"]:
-        footer.append("ledger: %d entries skipped (bad regex: %s)" % (len(led["skipped"]), ", ".join(led["skipped"])))
+    if led["bad_regex"]:
+        footer.append("ledger: %d entries skipped (bad regex: %s)" % (len(led["bad_regex"]), ", ".join(led["bad_regex"])))
+    if led["invalid"]:
+        footer.append("ledger: %d entries skipped (invalid: %s)" % (len(led["invalid"]), ", ".join(led["invalid"])))
     if not include_hidden:
         main_rows = [r for r in main_rows if not r["hidden"]]
     view = {"recurring": recurring, "rows": main_rows, "lessons": lessons, "nudges": main_nudges,
@@ -328,7 +335,7 @@ def notify(message):
     cmd = ["osascript", "-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)",
            "-e", "end run", "Warden lessons", message]
     try:
-        return subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30).returncode
+        return subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5).returncode
     except FileNotFoundError:
         return 127
     except (OSError, subprocess.SubprocessError):
@@ -354,13 +361,22 @@ def _test_mode():
         age = time.time() - os.stat(marker).st_mtime
     except OSError:
         return None
+    if age >= TEST_MAX_AGE:
+        try:
+            os.remove(marker)
+        except OSError:
+            pass
+        return None
+    code = notify("Test notification from schedule install.")
     try:
-        os.remove(marker)
+        if code == 0:
+            os.remove(marker)
+        else:
+            with open(marker, "w", encoding="utf-8") as f:
+                f.write("notify failed: %d" % code)
     except OSError:
         pass
-    if age >= TEST_MAX_AGE:
-        return None
-    return 0 if notify("Test notification from schedule install.") == 0 else 1
+    return 0 if code == 0 else 1
 
 
 def weekly_cmd(args):
@@ -513,6 +529,11 @@ def _install():
     limit = int(os.environ.get("WARDEN_KICKSTART_WAIT", "10"))
     deadline = time.time() + limit
     while os.path.exists(marker) and time.time() < deadline:
+        failure = _marker_text(marker)
+        if failure.startswith("notify failed:"):
+            _remove(marker)
+            print("schedule: the test notification failed (%s). Check System Settings > Notifications > Script Editor." % failure)
+            return 1
         time.sleep(0.2)
     if os.path.exists(marker):
         _remove(marker)
@@ -534,6 +555,14 @@ def _install():
               "Notifications > Script Editor. If Script Editor is not listed, open Script Editor, run: "
               'display notification "test", and allow the prompt. Then run: warden-lesson schedule confirm')
     return 0
+
+
+def _marker_text(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
 
 
 def _remove(path):

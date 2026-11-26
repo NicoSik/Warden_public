@@ -151,7 +151,7 @@ OUT="$(WL mark x open --match 'not found')"
 case "$OUT" in *"mark: warning, also matched by w"*) pass "mark warns about an overlap";; *) fail "mark overlap: $OUT";; esac
 
 # T10. No ledger, and an empty ledger, leave the report byte for byte as before.
-git -C "$REPO_DIR" show 49faf2b:plugins/warden/scripts/warden-lesson > "$HARNESS_TMP/ref"
+git -C "$REPO_DIR" show 777adff:plugins/warden/scripts/warden-lesson > "$HARNESS_TMP/ref"
 sroot
 sfail s1 2026-11-11T10:00:00Z git "fatal: not a git repository" alpha
 sfail s2 2026-11-12T10:00:00Z git "fatal: not a git repository" beta
@@ -239,6 +239,21 @@ OUT="$(WL report 2>&1)"; RC=$?
 chmod 600 "$ROOT/ledger.jsonl"
 [ "$RC" = 0 ] && [ "${OUT##*$'\n'}" = "ledger: unreadable" ] && pass "an unreadable ledger is reported" || fail "unreadable: rc=$RC $OUT"
 
+# T16b. An entry with no status or an unknown kind is skipped; nothing crashes.
+sroot
+sfail s1 2026-11-11T10:00:00Z make "boom"
+echo '{"slug":"nostat","kind":"sig","match":"boom","ts":"2026-11-26T10:00:00Z"}' >> "$ROOT/ledger.jsonl"
+echo '{"slug":"other","kind":"other","status":"open","ts":"2026-11-26T10:00:00Z"}' >> "$ROOT/ledger.jsonl"
+OUT="$(WL report 2>&1)"; RC=$?
+[ "$RC" = 0 ] && [ "${OUT##*$'\n'}" = "ledger: 2 entries skipped (invalid: nostat, other)" ] && pass "invalid entries are skipped and named in the footer" || fail "invalid entries: rc=$RC $OUT"
+echo '{"slug":"bad","kind":"sig","match":"(","status":"open","ts":"2026-11-26T10:00:00Z"}' >> "$ROOT/ledger.jsonl"
+OUT="$(WL report 2>&1)"
+case "$OUT" in *"ledger: 1 entries skipped (bad regex: bad)"*"ledger: 2 entries skipped (invalid: nostat, other)"*|*"ledger: 2 entries skipped (invalid: nostat, other)"*"ledger: 1 entries skipped (bad regex: bad)"*) pass "both skip footers print";; *) fail "both footers: $OUT";; esac
+WL mark fine open --match boom >/dev/null 2>&1; RC=$?
+[ "$RC" = 0 ] && pass "mark succeeds beside invalid entries" || fail "mark beside invalid: rc=$RC"
+WL weekly >/dev/null 2>&1; RC=$?
+[ -f "$ROOT/weekly/last-run" ] && pass "weekly writes last-run beside invalid entries" || fail "weekly beside invalid: rc=$RC"
+
 # ---- Task 3: weekly and the weekly: status line ----
 export WARDEN_NOW=2026-11-30T09:15:00
 oslines() { grep -c '^osascript' "$WARDEN_STUB_LOG"; }
@@ -281,6 +296,14 @@ WL mark w open --match '^\(eval\):N: \S+ not found$' >/dev/null
 clearlog
 WL weekly
 [ "$(oslines)" = 0 ] && pass "marking the signature stops the notification" || fail "T19 after mark: $(cat "$WARDEN_STUB_LOG")"
+
+# T19b. A flagged row hidden as no signature is not unacknowledged.
+sroot
+for i in 1 2 3; do sfail "s$i" "2026-11-1${i}T10:00:00Z" make "" "repo$i"; done
+clearlog
+OUT="$(WL report)"
+WL weekly
+if case "$OUT" in *"hidden: 1 no signature"*) true;; *) false;; esac && [ "$(oslines)" = 0 ] && lastrun_has x 'assert d["unacknowledged"]==0'; then pass "a no-signature row is not counted as unacknowledged"; else fail "T19b: $OUT $(cat "$ROOT/weekly/last-run")"; fi
 
 # T20. Retention keeps the 12 newest reports and touches nothing else.
 sroot
@@ -370,6 +393,16 @@ START=$SECONDS
 OUT="$(CWL schedule install < /dev/null 2>&1)"; RC=$?
 ELAPSED=$((SECONDS - START))
 if [ $RC -eq 1 ] && [ $ELAPSED -ge 2 ] && [ $ELAPSED -le 6 ] && case "$OUT" in *"did not run the test"*) true;; *) false;; esac && [ "$(oslines)" = 0 ] && [ ! -e "$ROOT/weekly/test-notify" ]; then pass "an agent that does not run exits 1 and removes the marker"; else fail "T22b: rc $RC after ${ELAPSED}s: $OUT"; fi
+
+# T22d. A failed test notification is reported by install.
+schedsetup
+OUT="$(WARDEN_STUB_OSASCRIPT_EXIT=1 bash -c '(sleep 1; printf "y\n"; sleep 1) | script -q /dev/null python3 -I "'"$CSCRIPT"'" schedule install' 2>&1)"; RC=$?
+if [ $RC -eq 1 ] || printf '%s' "$OUT" | grep -q 'test notification failed'; then
+  if printf '%s' "$OUT" | grep -q 'test notification failed' && ! printf '%s' "$OUT" | grep -q 'Did you see' && [ ! -e "$ROOT/weekly/test-notify" ] && [ ! -e "$ROOT/weekly/schedule.json" ]; then pass "a failed test notification exits 1 and never asks"; else fail "T22d: rc $RC $OUT"; fi
+else fail "T22d: rc $RC $OUT"; fi
+schedsetup
+OUT="$(WARDEN_STUB_OSASCRIPT_EXIT=1 CWL schedule install < /dev/null 2>&1)"; RC=$?
+if [ $RC -eq 1 ] && case "$OUT" in *"test notification failed (notify failed: 1)"*) true;; *) false;; esac && [ ! -e "$ROOT/weekly/test-notify" ]; then pass "install without a terminal also reports the failure"; else fail "T22d b: rc $RC $OUT"; fi
 
 # T22c. The marker decides the test mode by its age.
 schedsetup
