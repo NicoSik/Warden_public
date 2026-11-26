@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Eval stub for the read-order cases. In the eval sandbox git is blocked, so the real
+# graphify-setup prints "unavailable". run-behavior copies this over scripts/graphify-setup
+# in a per-case copy of the arm. See tests/behavior/README.md.
+if [ "$#" -eq 1 ] && [ "$1" = status ]; then
+  echo ready
+  exit 0
+fi
+echo "stub: only status is supported" >&2
+exit 2

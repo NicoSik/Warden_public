@@ -24,6 +24,8 @@ if [ "${1:-}" = "plugin" ] && [ "${2:-}" = "eval" ]; then
     for a in "$@"; do case "$a" in eval|plugin|-*) ;; *) target="$a"; break ;; esac; done
     # The positional target after "eval" is the plugin directory. Copy it before results are written.
     if [ -n "$target" ] && [ -d "$target" ]; then
+      mkdir -p "$STUB_SNAPSHOT_DIR"
+      printf '%s\n' "$PWD" > "$STUB_SNAPSHOT_DIR/cwd-$n"  # beside, not inside, the snapshot
       mkdir -p "$STUB_SNAPSHOT_DIR/call-$n" && cp -R "$target/." "$STUB_SNAPSHOT_DIR/call-$n/"
     fi
   fi

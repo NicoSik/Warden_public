@@ -370,6 +370,79 @@ if [ "$rc" -eq 2 ] && [ "$nrun" -eq 20 ] && [ ! -e "$WARDEN_BEHAVIOR_RAW_DIR/b00
   pass "16e record.py exit 2: retention still keeps 20 run folders, exit 2"
 else fail "16e rc=$rc nrun=$nrun: $(ls "$WARDEN_BEHAVIOR_RAW_DIR" | tr '\n' ' ')"; fi
 
+# 17. read-order cases run on a per-case copy of the arm with a stubbed setup status
+S17="$HERE/../lib/setup-status-stub"
+OLD17=$(git rev-parse 18498db); NEW17=$(git rev-parse a0f4807)
+printf '%s\n' "read-order 18498db a0f4807 both-at-least 4" "read-order-heldout 18498db a0f4807 both-at-least 4" "setup-planning 18498db a0f4807 at-least 4" > "$T/arms17.conf"
+out=$(snaprun "$T/arms17.conf"); rc=$?
+rec17=$(ls "$T"/runs/*.md 2>/dev/null | head -n1)
+# Map call-N to arm and case from the stub log. The target path holds arm-<n> or arm-<n>-<case>; arm 1 is 18498db, arm 2 is a0f4807.
+snapfor() { # snapfor <arm-index> <case> -> prints the snapshot dir
+  local line n arm cs
+  n=0
+  while IFS= read -r line; do
+    n=$((n + 1))
+    arm=$(printf '%s' "$line" | sed -n 's|.*/arm-\([0-9]*\)[-/].*|\1|p')
+    cs=$(printf '%s' "$line" | sed -n 's|.*--case \([^ ]*\).*|\1|p')
+    [ "$arm" = "$1" ] && [ "$cs" = "$2" ] && { printf '%s\n' "$T/snap/call-$n"; return 0; }
+  done < <(grep '^CALL eval' "$WARDEN_STUB_LOG")
+  return 1
+}
+ok=1
+for c in read-order read-order-heldout; do
+  d=$(snapfor 2 "$c") || { ok=0; continue; }
+  [ -x "$d/scripts/graphify-setup" ] && cmp -s "$d/scripts/graphify-setup" "$S17" || ok=0
+done
+[ "$ok" -eq 1 ] && pass "17a a0f4807 read-order snapshots hold the stub, executable" || fail "17a stub missing in read-order snapshots (rc=$rc): $out"
+
+d=$(snapfor 2 setup-planning); git show "a0f4807:plugins/warden/scripts/graphify-setup" > "$T/gs17"
+if [ -n "$d" ] && [ -x "$d/scripts/graphify-setup" ] && cmp -s "$d/scripts/graphify-setup" "$T/gs17"; then
+  pass "17b setup-planning snapshot holds the real graphify-setup"
+else fail "17b setup-planning snapshot not the real script"; fi
+
+ok=1
+for c in read-order read-order-heldout setup-planning; do
+  d=$(snapfor 1 "$c") || { ok=0; continue; }
+  [ ! -e "$d/scripts/graphify-setup" ] || ok=0
+done
+[ "$ok" -eq 1 ] && pass "17c no 18498db snapshot holds graphify-setup" || fail "17c 18498db snapshot has graphify-setup or is missing"
+
+ok=1
+[ -n "$rec17" ] || ok=0
+for c in read-order read-order-heldout; do
+  grep -qxF -e "- Setup status of $NEW17 in $c: stubbed (ready)" "$rec17" 2>/dev/null || ok=0
+  grep -qxF -e "- Setup status of $OLD17 in $c: not present" "$rec17" 2>/dev/null || ok=0
+done
+grep -q 'Setup status of .* in setup-planning' "$rec17" 2>/dev/null && ok=0
+[ "$ok" -eq 1 ] && pass "17d record pins the setup status per case" || fail "17d setup status pins wrong: $(grep 'Setup status' "$rec17" 2>&1)"
+
+o17=$("$S17" status 2>"$T/e17"); r17=$?
+ok=1
+[ "$o17" = ready ] && [ "$r17" -eq 0 ] || ok=0
+for args in setup decline "status extra" ""; do
+  if [ -n "$args" ]; then "$S17" $args >/dev/null 2>"$T/e17"; r=$?; else "$S17" >/dev/null 2>"$T/e17"; r=$?; fi
+  [ "$r" -ne 0 ] && grep -qxF 'stub: only status is supported' "$T/e17" || ok=0
+done
+[ "$ok" -eq 1 ] && pass "17e stub prints ready for status, refuses the rest" || fail "17e stub behaviour wrong (out=$o17 rc=$r17)"
+
+# 17g. the eval runs inside the arm copy for a0f4807 read-order cases, and in the scratch arm otherwise
+ok=1
+for arm in 1 2; do
+  for c in read-order read-order-heldout setup-planning; do
+    d=$(snapfor "$arm" "$c") || { ok=0; continue; }
+    cwd=$(cat "$T/snap/cwd-${d##*call-}" 2>/dev/null); base=$(basename "$cwd")
+    if [ "$arm" = 2 ] && [ "$c" != setup-planning ]; then
+      [ "$base" = "arm-2-$c" ] || ok=0
+    else
+      case "$base" in arm-[0-9]) ;; *) ok=0 ;; esac
+    fi
+  done
+done
+[ "$ok" -eq 1 ] && pass "17g eval cwd is the arm copy for a0f4807 read-order, the scratch arm otherwise" || fail "17g eval cwd wrong: $(cat "$T"/snap/cwd-* 2>&1 | tr "
+" " ")"
+
+[ "$(evals)" -eq 6 ] && pass "17f six evals, copies add no calls" || fail "17f evals=$(evals), expected 6"
+
 # 8. repo untouched, no scratch left
 STATUS_AFTER=$(git status --porcelain)
 [ "$STATUS_BEFORE" = "$STATUS_AFTER" ] && pass "8 git status unchanged" || fail "8 git status changed"

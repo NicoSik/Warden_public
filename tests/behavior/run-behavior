@@ -12,6 +12,7 @@ RECORD_DIR="${WARDEN_BEHAVIOR_RECORD_DIR:-$REPO/docs/superpowers/changes/2026-10
 RAW_BASE="${WARDEN_BEHAVIOR_RAW_DIR:-$HOME/.cache/warden-behavior}"
 LABEL="list-price estimate; not billed on a subscription login, uses your plan's usage limits"
 
+SETUP_STUB_CASES="read-order read-order-heldout"
 CASE=all RUNS=5 MODEL="" YES=0
 usage() { echo "usage: run-behavior [--case <name>|all] [--runs N] [--model ID] [--arms FILE] [--record-dir DIR] [--yes]" >&2; exit 2; }
 while [ $# -gt 0 ]; do
@@ -163,7 +164,21 @@ PY
     k=$((k + 1))
     part="$WORK/result-$n-$k.json"
     echo "Evaluating $(printf '%s' "$sha" | cut -c1-7) $c ..."
-    ( cd "$scratch" && claude plugin eval "$scratch/plugins/superpowers" \
+    run_dir="$scratch"
+    case " $SETUP_STUB_CASES " in
+      *" $c "*)
+        if [ -e "$scratch/plugins/superpowers/scripts/graphify-setup" ]; then
+          # The eval sandbox blocks git, so run on a copy whose graphify-setup is the stub. The scratch arm stays unchanged.
+          run_dir="$WORK/arm-$n-$c"
+          cp -R "$scratch" "$run_dir" || { echo "error: could not copy arm for $sha in $c" >&2; exit 2; }
+          cp "$HERE/lib/setup-status-stub" "$run_dir/plugins/superpowers/scripts/graphify-setup" || { echo "error: could not place the setup status stub for $sha in $c" >&2; exit 2; }
+          chmod 755 "$run_dir/plugins/superpowers/scripts/graphify-setup"
+          RESULT_ARGS+=(--setup-status "$sha:$c=stubbed (ready)")
+        else
+          RESULT_ARGS+=(--setup-status "$sha:$c=not present")
+        fi ;;
+    esac
+    ( cd "$run_dir" && claude plugin eval "$run_dir/plugins/superpowers" \
         --no-publish --ablation none --scaffold --trust-plugin --keep-temp \
         --eval-dir warden-evals --json "$part" --allow-tools Bash --runs "$RUNS" \
         ${model_args[@]+"${model_args[@]}"} --case "$c" >"$WORK/eval-$n-$k.log" 2>&1 )
