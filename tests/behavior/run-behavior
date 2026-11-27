@@ -69,7 +69,8 @@ trap 'rm -rf "$WORK"' EXIT
 
 # Resolve arms.conf into full SHAs, filtered by --case.
 : > "$WORK/conf"
-while read -r c base cand rule count; do
+: > "$WORK/keys"
+while read -r c base cand rule count amodel; do
   case "$c" in ''|'#'*) continue ;; esac
   # A baseline of "-" means candidate only: pass it through unresolved.
   if [ "$base" = "-" ]; then bsha="-"; else
@@ -77,7 +78,9 @@ while read -r c base cand rule count; do
   fi
   csha=$(resolve_or_fetch "$cand") || die3 "ref $cand in $(basename "$CONF") does not resolve"
   if [ "$CASE" = all ] || [ "$CASE" = "$c" ]; then
-    printf '%s %s %s %s %s\n' "$c" "$bsha" "$csha" "$rule" "$count" >> "$WORK/conf"
+    printf '%s %s %s %s %s%s\n' "$c" "$bsha" "$csha" "$rule" "$count" "${amodel:+ $amodel}" >> "$WORK/conf"
+    # keys: case, baseline arm key, candidate arm key. An arm key is <sha> or <sha>@<model>.
+    printf '%s %s %s\n' "$c" "$bsha" "$csha${amodel:+@$amodel}" >> "$WORK/keys"
   fi
 done < "$CONF"
 [ -s "$WORK/conf" ] || { echo "no case matches '$CASE'" >&2; exit 2; }
@@ -104,13 +107,17 @@ if [ "$YES" -ne 1 ]; then
   case "$ans" in y|Y|yes|YES) ;; *) echo "Cancelled."; exit 2 ;; esac
 fi
 
-# Materialize and evaluate each distinct arm ref once.
-REFS=$(awk '{print $2; print $3}' "$WORK/conf" | awk '$0 != "-" && !seen[$0]++')
+# Materialize and evaluate each distinct arm (commit plus optional model) once.
+REFS=$(awk '{print $2; print $3}' "$WORK/keys" | awk '$0 != "-" && !seen[$0]++')
 ID=$(python3 -I -c 'import secrets;print(secrets.token_hex(3))')
 RESULT_ARGS=()
 n=0
-for sha in $REFS; do
+SS_SEEN=" "
+for key in $REFS; do
   n=$((n + 1))
+  sha=${key%%@*}
+  armmodel=""; armdir=$(printf '%s' "$sha" | cut -c1-7)
+  case "$key" in *@*) armmodel=${key#*@}; armdir="$armdir-$armmodel" ;; esac
   scratch="$WORK/arm-$n"
   mkdir -p "$scratch"
   git -C "$REPO" archive "$sha" plugins/superpowers | tar -x -C "$scratch" || { echo "git archive failed for $sha" >&2; exit 2; }
@@ -156,11 +163,12 @@ PY
   rm -f "$dest/arms.conf"
   res="$WORK/result-$n.json"
   model_args=()
-  [ -n "$MODEL" ] && model_args=(--model "$MODEL")
+  [ -n "$armmodel" ] && model_args=(--model "$armmodel")
+  [ -z "$armmodel" ] && [ -n "$MODEL" ] && model_args=(--model "$MODEL")
   # plugin eval honours only the last --case, so run one eval per case and merge.
   parts=()
   k=0
-  for c in $(awk -v s="$sha" '$2==s || $3==s {print $1}' "$WORK/conf" | awk '!seen[$0]++'); do
+  for c in $(awk -v s="$key" '$2==s || $3==s {print $1}' "$WORK/keys" | awk '!seen[$0]++'); do
     k=$((k + 1))
     part="$WORK/result-$n-$k.json"
     echo "Evaluating $(printf '%s' "$sha" | cut -c1-7) $c ..."
@@ -173,9 +181,9 @@ PY
           cp -R "$scratch" "$run_dir" || { echo "error: could not copy arm for $sha in $c" >&2; exit 2; }
           cp "$HERE/lib/setup-status-stub" "$run_dir/plugins/superpowers/scripts/graphify-setup" || { echo "error: could not place the setup status stub for $sha in $c" >&2; exit 2; }
           chmod 755 "$run_dir/plugins/superpowers/scripts/graphify-setup"
-          RESULT_ARGS+=(--setup-status "$sha:$c=stubbed (ready)")
+          case "$SS_SEEN" in *" $sha:$c "*) ;; *) SS_SEEN="$SS_SEEN$sha:$c "; RESULT_ARGS+=(--setup-status "$sha:$c=stubbed (ready)") ;; esac
         else
-          RESULT_ARGS+=(--setup-status "$sha:$c=not present")
+          case "$SS_SEEN" in *" $sha:$c "*) ;; *) SS_SEEN="$SS_SEEN$sha:$c "; RESULT_ARGS+=(--setup-status "$sha:$c=not present") ;; esac
         fi ;;
     esac
     ( cd "$run_dir" && claude plugin eval "$run_dir/plugins/superpowers" \
@@ -199,7 +207,7 @@ for p in parts:
 json.dump(merged, open(out, "w"))
 PY
   # record.py deletes the eval temp folders, so copy each trace into the trace cache first.
-  python3 -I - "$res" "$RAW_BASE/$ID/traces" "$(printf '%s' "$sha" | cut -c1-7)" <<'PY' || { echo "error: could not copy traces for $sha" >&2; exit 2; }
+  python3 -I - "$res" "$RAW_BASE/$ID/traces" "$armdir" <<'PY' || { echo "error: could not copy traces for $sha" >&2; exit 2; }
 import json, os, shutil, sys
 res, dest, arm = sys.argv[1:4]
 for c in json.load(open(res)).get("cases", []):
@@ -210,7 +218,7 @@ for c in json.load(open(res)).get("cases", []):
             os.makedirs(d, exist_ok=True)
             shutil.copyfile(tp, os.path.join(d, "run-%d.jsonl" % i))
 PY
-  RESULT_ARGS+=(--result "$sha=$res")
+  RESULT_ARGS+=(--result "$key=$res")
 done
 
 FIXTURE_HASH=$(git -C "$REPO" rev-parse HEAD:tests/behavior/evals/_fixture/storefront)

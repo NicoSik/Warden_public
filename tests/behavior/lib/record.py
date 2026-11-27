@@ -116,12 +116,16 @@ def grade_run(case, rule, run):
     return None, "errored (no triggered grader)"
 
 
-def trace_models(raw_dir):
-    """Distinct message.model values on assistant lines of the kept traces under raw_dir."""
+def trace_models(raw_dir, case=None, arm_dir=None):
+    """Distinct message.model values on assistant lines of the kept traces under raw_dir.
+    With case and arm_dir, only the traces of that arm folder (traces/<case>/<arm_dir>)."""
     found = set()
     if not raw_dir:
         return found
-    for root, _dirs, files in os.walk(os.path.join(raw_dir, "traces")):
+    top = os.path.join(raw_dir, "traces")
+    if case and arm_dir:
+        top = os.path.join(top, case, arm_dir)
+    for root, _dirs, files in os.walk(top):
         for name in files:
             if not name.endswith(".jsonl"):
                 continue
@@ -181,9 +185,9 @@ def main():
         with open(a.conf) as f:
             for ln in f:
                 p = ln.split()
-                if len(p) == 5:
-                    conf.append(p)
-        for case, base, cand, rule, count in conf:
+                if len(p) in (5, 6):
+                    conf.append(p + [""] * (6 - len(p)))
+        for case, base, cand, rule, count, amodel in conf:
             if rule == "both-at-least" and base == "-":
                 print("error: row '%s %s %s %s %s': both-at-least needs a baseline sha" % (case, base, cand, rule, count),
                       file=sys.stderr)
@@ -192,7 +196,12 @@ def main():
         versions = {r.get("claudeVersion") for r in results.values()}
         models = trace_models(a.raw_dir) or {"unknown (no model ID in traces)"}
         shas = []
-        for case, base, cand, rule, count in conf:
+        keys_by_sha = {}
+        for case, base, cand, rule, count, amodel in conf:
+            ck = cand + ("@" + amodel if amodel else "")
+            for k in ((base if base != "-" else None), ck):
+                if k:
+                    keys_by_sha.setdefault(k.split("@")[0], set()).add(k)
             for s in (base, cand):
                 if s != "-" and s not in shas:
                     shas.append(s)
@@ -202,11 +211,14 @@ def main():
         terminal = []
         total_cost = 0.0
         failed = False
-        for case, base, cand, rule, count in conf:
-            arms = (("candidate", cand),) if base == "-" else (("baseline", base), ("candidate", cand))
-            for arm, sha in arms:
+        show_model = any(len(v) > 1 for v in keys_by_sha.values())
+        for case, base, cand, rule, count, amodel in conf:
+            ck = cand + ("@" + amodel if amodel else "")
+            arms = (("candidate", ck),) if base == "-" else (("baseline", base), ("candidate", ck))
+            for arm, key in arms:
+                sha = key.split("@")[0]
                 item = None
-                for c in results[sha]["cases"]:
+                for c in results[key]["cases"]:
                     if c.get("name") == case:
                         item = c
                 if item is None:
@@ -245,7 +257,10 @@ def main():
                     crit = "(%s %s %s)" % (what, op, count)
                 if a.merge_check_stub:
                     verdict = "STUB"
-                rows.append((case, arm, sha, "%d/%d%s" % (hits, len(runs), " (%d errored)" % errored if errored else ""), crit, verdict))
+                armdir = sha[:7] + ("-" + key.split("@", 1)[1] if "@" in key else "")
+                mods = trace_models(a.raw_dir, case, armdir)
+                mcell = ", ".join(sorted(mods)) if mods else (key.split("@", 1)[1] if "@" in key else "unknown")
+                rows.append((case, arm, sha, mcell, "%d/%d%s" % (hits, len(runs), " (%d errored)" % errored if errored else ""), crit, verdict))
 
         today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
         out = []
@@ -259,7 +274,7 @@ def main():
         out.append("- Model: %s" % ", ".join(sorted(models)))
         for s in shas:
             roles = []
-            for case, base, cand, rule, count in conf:
+            for case, base, cand, rule, count, amodel in conf:
                 if s == base:
                     roles.append("baseline of %s" % case)
                 if s == cand:
@@ -276,10 +291,18 @@ def main():
         out.append("")
         out.append("## Results")
         out.append("")
-        out.append("| case | arm | SHA | count/runs | criterion | result |")
-        out.append("|---|---|---|---|---|---|")
-        for case, arm, sha, cr, crit, verdict in rows:
-            out.append("| %s | %s | %s | %s | %s | %s |" % (case, arm, sha[:7], cr, crit, verdict))
+        if show_model:
+            hdr = "| case | arm | SHA | model | count/runs | criterion | result |"
+            out.append(hdr)
+            out.append("|---|---|---|---|---|---|---|")
+            for case, arm, sha, mcell, cr, crit, verdict in rows:
+                out.append("| %s | %s | %s | %s | %s | %s | %s |" % (case, arm, sha[:7], mcell, cr, crit, verdict))
+        else:
+            hdr = "| case | arm | SHA | count/runs | criterion | result |"
+            out.append(hdr)
+            out.append("|---|---|---|---|---|---|")
+            for case, arm, sha, mcell, cr, crit, verdict in rows:
+                out.append("| %s | %s | %s | %s | %s | %s |" % (case, arm, sha[:7], cr, crit, verdict))
         out.append("")
         out.append("## Runs")
         out.append("")
@@ -298,7 +321,7 @@ def main():
         path = os.path.join(a.out_dir, "%s-%s.md" % (today, a.id))
         with open(path, "w") as f:
             f.write(text)
-        print("\n".join(out[out.index("| case | arm | SHA | count/runs | criterion | result |"):out.index("## Runs") - 1]))
+        print("\n".join(out[out.index(hdr):out.index("## Runs") - 1]))
         print("record: " + path)
         if terminal:
             print("\n".join(terminal))
