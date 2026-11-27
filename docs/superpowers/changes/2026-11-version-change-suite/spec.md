@@ -1,6 +1,6 @@
 # Spec: version-change-suite
 
-Intent: `intent.md`. Date: 2026-11-27. Status: draft.
+Intent: `intent.md`. Date: 2026-11-27. Status: approved.
 
 ## Summary
 
@@ -40,8 +40,10 @@ on 2026-11-27.
 - **The combined view** of a group of summaries holds, for each suite case, the newest
   non-`ERRORED` case result of the main arm in that group. A case with only `ERRORED` results
   stays `ERRORED`.
-- **Covered** means that the combined view of the summaries with the current minor pins has a
-  non-`ERRORED` case result for every case in the suite config.
+- **A covered group** is a group of summaries with the same minor pins whose combined view has
+  a non-`ERRORED` case result for every case in the suite config.
+- **Covered** means that the summaries with the current minor pins form a covered group.
+- **The newest covered group** is the covered group whose newest summary is the newest.
 - **The log window** is the time from the `ts` of the last weekly run to now. Without a last
   run, it is the last 7 days.
 - **A main-session line** is a transcript line of type `assistant` that is in a file outside any
@@ -145,23 +147,22 @@ of the new full pins with the combined view of the newest earlier full pins that
   - **REQ-4.6** When that key is absent or is not a full model ID, the weekly run MUST record the
     model as `unknown`.
   - **REQ-4.7** The weekly run MUST NOT copy transcript text into any file. It records only the
-    model ID and the line count.
+    model ID and the line count. (Ruling F1, 2026-11-27.)
   *Proof: T24 to T30 in `tests/warden_ledger.sh`.*
   *Source: outcome paragraphs 1 and 2. Resolved questions on the model source and the log
-  window. Constraint "the weekly job uses no usage limits". REQ-4.7: flagged concern F1.*
+  window. Constraint "the weekly job uses no usage limits". REQ-4.7: ruling F1.*
 
-**REQ-5** The weekly run MUST notify when the current pins are not covered and the model ID
-or the CLI minor differs from the newest summary.
-  - **REQ-5.1** The weekly run MUST notify `no suite record yet` when the suite folder has no
-    summary.
+**REQ-5** The weekly run MUST notify when the current pins are not covered.
+  - **REQ-5.1** The weekly run MUST notify `no complete suite record yet` when no covered group
+    exists.
   - **REQ-5.2** The notification MUST repeat on each weekly run until the current pins are
     covered.
   - **REQ-5.3** A partial or single-case summary MUST stop the notification only when the
     combined view makes the current pins covered.
   - **REQ-5.4** A CLI difference in the patch number only MUST NOT notify.
   - **REQ-5.5** An `unknown` model MUST NOT notify.
-  - **REQ-5.6** The version text MUST name the old and the new value and the command
-    `warden-lesson suite`.
+  - **REQ-5.6** The version text MUST name the old value from the newest covered group, the
+    new value and the command `warden-lesson suite`. (Ruling F2, 2026-11-27.)
   - **REQ-5.7** The weekly run MUST send one notification that holds the ledger text and the
     version text when both apply.
   - **REQ-5.8** The ledger notifications MUST fire under the same conditions as today.
@@ -169,7 +170,9 @@ or the CLI minor differs from the newest summary.
   - **REQ-5.10** The weekly report file MUST state whether the current pins differ from the
     pins of the last weekly run, including a patch-only difference.
   - **REQ-5.11** The weekly run MUST NOT start an eval.
-  *Proof: T31 to T40 in `tests/warden_ledger.sh`. A `git grep` shows no call from the ledger
+  - **REQ-5.12** When the CLI check is skipped, the weekly run MUST judge coverage by the model
+    ID alone.
+  *Proof: T31 to T40, T51 and T52 in `tests/warden_ledger.sh`. A `git grep` shows no call from the ledger
   module to the wrapper.*
   *Source: outcome paragraphs 4 and 5. Resolved question on the notification rule. Ruling on
   coverage.
@@ -274,7 +277,7 @@ the version check.
 - T28: an empty log window falls back to `settings.json` and records `settings`.
 - T29: an alias in `settings.json` gives `unknown`.
 - T30: no transcript text appears in the weekly folder.
-- T31: no summary notifies `no suite record yet`.
+- T31: an empty suite folder notifies `no complete suite record yet`.
 - T32: a model change notifies.
 - T33: the notification repeats on the next weekly run while the pins are not covered.
 - T34: a CLI minor change notifies.
@@ -290,6 +293,9 @@ the version check.
 - T48: `status` prints the suite line.
 - T49: `status` prints `suite: never run`.
 - T50: `status` prints the `claude not found` warning.
+- T51: with a failed CLI check, a covered model sends no version notification.
+- T52: a newer summary with an `ERRORED` case does not become the old value. The text names
+  the newest covered group.
 
 `tests/behavior/tests/record_grading.sh`:
 - T41: a suite run writes a summary with the fields of REQ-6.1 and REQ-6.2.
@@ -320,18 +326,18 @@ Rules and area guides:
 
 Policy skills: this is a tooling repository with no product domain, and it has no policy
 skill. One item touches personal data: the weekly run reads Nicolai's own session transcripts.
-REQ-4.7 limits what the weekly run keeps. See F1.
+REQ-4.7 limits what the weekly run keeps (ruling F1).
 
 ## Flagged concerns
 
+Nicolai ruled on both concerns on 2026-11-27.
+
 - **F1: what the weekly run keeps from the transcripts.** The intent says the model comes from
-  the session logs. It says nothing about what the job stores from them. REQ-4.7 adds that the
-  job stores only the model ID and the line count. Options: keep REQ-4.7, or withdraw it and
-  let the plan decide. Owner: Nicolai.
-- **F2: the source of the old value in the notification.** REQ-5.6 names the old value from the
-  newest summary, not from the last weekly run. The two differ when a suite ran mid-week on new
-  pins that are not yet covered. Options: the newest summary (this draft), or the pins of the
-  newest covered group. Owner: Nicolai.
+  the session logs. It says nothing about what the job stores from them. Ruling: keep REQ-4.7.
+  The weekly run keeps only the model ID and the line count.
+- **F2: the source of the old value in the notification.** The newest summary and the newest
+  covered group differ when a suite ran on new pins and left a case `ERRORED`. Ruling: the old
+  value comes from the newest covered group. REQ-5.6 states it.
 
 ## Open questions carried from intent
 
