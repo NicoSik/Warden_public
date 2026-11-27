@@ -87,15 +87,20 @@ after-fix session.
   - **REQ-4.1** When at least one recurring entry exists, the first section of the report
     MUST be "Fixed but recurring". When none exists, the report MUST NOT print the section.
   - **REQ-4.2** The section MUST hold one header line per recurring entry, with the slug,
-    the status, the PR, the fix day and the number of after-fix sessions.
-  - **REQ-4.3** Under each header, the section MUST list the matching rows or nudges, indented.
+    the status, the PR, the fix day and the number of after-fix sessions. The count MUST
+    include only the sessions of the rows and nudges listed under that header.
+  - **REQ-4.3** Under each header, the section MUST list the matching rows and nudges that
+    have an after-fix session, indented. A matching row with no after-fix session stays in
+    the main list.
   - **REQ-4.4** The section MUST show a matching row even when a hide reason applies to it.
   - **REQ-4.5** A row in the section MUST NOT appear again in the main list.
   - **REQ-4.6** A row that matches an open, fixed or verified entry MUST end with
     `ledger(<slug>:<status>)` in the main list.
   - **REQ-4.7** The report MUST hide a row that matches an ignored entry, and MUST count it
-    under the hide reason `ignored`, after the existing reasons.
-  - **REQ-4.8** `report --all` MUST show the ignored rows with `hidden(ignored)`.
+    under the hide reason `ignored`, after the existing reasons. A row that has a hide reason
+    already MUST keep that reason and its count.
+  - **REQ-4.8** `report --all` MUST show the ignored rows with `hidden(ignored)`. A row that
+    had a hide reason before the ledger shows that first reason.
   - **REQ-4.9** With a missing or empty ledger, the report MUST print the same bytes as before
     this change.
   - **REQ-4.10** The report MUST skip a ledger line whose regex does not compile, and MUST end
@@ -103,7 +108,10 @@ after-fix session.
   - **REQ-4.11** When the ledger cannot be read, the report MUST print the rows without ledger
     data and end with `ledger: unreadable`.
   - **REQ-4.12** The report MUST NOT exit non-zero because of the ledger.
-  *Proof: T10, T11, T14 and T16.*
+  - **REQ-4.13** The report MUST skip an entry whose latest line has an unknown `status` or a
+    `kind` other than `sig` or `nudge`, and MUST end with
+    `ledger: N entries skipped (invalid: <slugs>)`.
+  *Proof: T10, T11, T13b, T14 and T16.*
   *Source: outcome paragraph 3, the constraint on existing output. Design section 2, with the
   grouping change.*
 
@@ -132,11 +140,13 @@ is something new to act on.
   - **REQ-6.1** The `status` command MUST print its existing four lines unchanged, then a
     `weekly:` line, then a `schedule:` line.
   - **REQ-6.2** The `weekly:` line MUST show the last run time, R, U and whether it notified.
-  - **REQ-6.3** The `weekly:` line MUST say `never run` when `last-run` does not exist.
+  - **REQ-6.3** The `weekly:` line MUST say `never run` when `last-run` does not exist, and
+    `last-run unreadable` when the file cannot be read or parsed.
   - **REQ-6.4** The `weekly:` line MUST end with `STALE` when the last run is more than 8 days old.
   - **REQ-6.5** The `weekly:` line MUST show the error that `last-run` records.
   - **REQ-6.6** The `schedule:` line MUST show the first state that applies, in this order:
-    `not installed`, `broken (script missing: <path>)`, `broken (interpreter missing: <path>)`,
+    `not installed`, `broken (plist unreadable)`, `broken (script missing: <path>)`,
+    `broken (interpreter missing: <path>)`,
     `installed, Monday 09:15, notification unconfirmed`, `installed, Monday 09:15`.
   *Proof: T26.*
   *Source: outcome paragraph 5, the interview answer "silence can't hide a broken job". Design section 3.*
@@ -174,7 +184,8 @@ is something new to act on.
     `<main checkout>/plugins/warden/scripts/warden-lesson`.
   - **REQ-9.2** `schedule install` MUST refuse when `<main checkout>/.git` is a file, and the
     message MUST say the checkout is a git worktree.
-  - **REQ-9.3** `schedule install` MUST refuse when `~/.claude/bin` does not exist.
+  - **REQ-9.3** `schedule install` MUST refuse when `~/.claude/bin` does not exist, and when
+    the script path from REQ-9.1 does not exist.
   - **REQ-9.4** `schedule install` MUST use the unresolved `python3` path from PATH as the
     interpreter, and MUST refuse when PATH has no `python3`.
   - **REQ-9.5** `schedule install` MUST write a plist that runs `<python3> -I <script> weekly`
@@ -194,13 +205,19 @@ is something new to act on.
   - **REQ-9.12** `schedule uninstall` MUST exit 0 when the plist does not exist.
   - **REQ-9.13** The repository MUST NOT contain a plist or a home path.
   - **REQ-9.14** In the test mode, the agent's run MUST send only the test notification and
-    MUST NOT write a report, `last-run` or any other file.
+    MUST NOT write a report, `last-run` or any other file. It MAY write a failure text into
+    the test-mode request file (REQ-9.18).
   - **REQ-9.15** `schedule install` MUST ask the confirmation question only after the agent
     ran the test mode.
   - **REQ-9.16** When the agent does not run the test mode within 10 seconds,
     `schedule install` MUST exit 1 and say that the agent did not run.
   - **REQ-9.17** A test-mode request older than 5 minutes MUST NOT stop a normal weekly run.
-  *Proof: T22, T22b, T22c, T23, T24, T25 and T27.*
+  - **REQ-9.18** When the test notification fails, the agent's run MUST write
+    `notify failed: <code>` into the test-mode request file and MUST NOT delete the file.
+  - **REQ-9.19** When the test-mode request file holds `notify failed:`, `schedule install`
+    MUST exit 1, name Script Editor in System Settings > Notifications, and MUST NOT ask the
+    confirmation question.
+  *Proof: T22, T22b, T22c, T22d, T22e, T23, T24, T25 and T27.*
   *Source: resolved questions on `schedule` and the run time. Design section 3 with the three fixes.*
 
 **REQ-10** After the merge, the ledger MUST hold these four entries, written with `mark`
@@ -287,7 +304,10 @@ Warden lessons
 ```
 
 **Test seams.** The tests set `WARDEN_LESSON_ROOT`, `WARDEN_LAUNCH_AGENTS` and `WARDEN_NOW`,
-and a fixed `TZ`. PATH stubs in `tests/stubs/` replace `osascript` and `launchctl`.
+and a fixed `TZ`. PATH stubs in `tests/stubs/` replace `osascript` and `launchctl`. Only the
+stubs read `WARDEN_STUB_OSASCRIPT_EXIT`, `WARDEN_STUB_LAUNCHCTL_EXIT` and
+`WARDEN_STUB_KICKSTART_CMD`. Production code reads no other test variable. The install waits
+10 seconds for the agent, and `notify` stops `osascript` after 5 seconds.
 
 **Test list.** T1 to T27 and T18b, as approved in design section 4, with the T12 fix. They
 live in `tests/warden_ledger.sh`, which `tests/run.sh` calls.
@@ -302,3 +322,19 @@ live in `tests/warden_ledger.sh`, which `tests/run.sh` calls.
   invisible, because `osascript` still exits 0.
 - macOS lists `osascript` notifications under Script Editor in System Settings >
   Notifications. Sources: forum reports and a Claude Code issue, not Apple documentation.
+
+## Reconciled 2026-11-27
+- REQ-4.2: the header count included sessions of rows that a later entry won. Ruling: the
+  code was wrong. The count now uses only the rows and nudges under the header.
+- REQ-4.3: the block lists only matching rows with an after-fix session. Ruling: the spec
+  was wrong.
+- REQ-4.7 and REQ-4.8: a row with a hide reason keeps that reason. Ruling: the spec was wrong.
+- REQ-4.13: added. Review finding F2 skips an entry with an unknown `status` or `kind`, so
+  the report does not crash. Ruling: the spec was wrong.
+- REQ-6.3, REQ-6.6 and REQ-9.3: the states `last-run unreadable` and
+  `broken (plist unreadable)`, and the refusal for a missing script. Ruling: the spec was wrong.
+- REQ-9.14, REQ-9.18 and REQ-9.19: review finding F3 records a failed test notification in
+  the request file, and the install reports it. Ruling: the spec was wrong.
+- Design notes, test seams: the stub variables and the timeouts were not listed. Ruling: the
+  spec was wrong. The `WARDEN_KICKSTART_WAIT` variable was a test variable in production
+  code. Ruling: the code was wrong. The install now always waits 10 seconds.
