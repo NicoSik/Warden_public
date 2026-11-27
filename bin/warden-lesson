@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# warden-lesson - add, list and status for the lesson inbox. Runs the plugin script.
+# warden-lesson - the lesson inbox: add, list, report, status, mark, weekly, schedule. Runs the plugin script.
 set -uo pipefail
 HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 exec python3 -I "$HERE/../plugins/warden/scripts/warden-lesson" "$@"
