@@ -43,6 +43,7 @@
 | `plugins/warden/scripts/warden_ledger.py` | Weekly run, status lines, schedule install | 6 |
 | `plugins/warden/scripts/warden-lesson` | The `suite` subcommand | 7 |
 | `tests/warden_suite.sh` | Unit tests for `warden_suite.py`, new | 2 |
+| `tests/behavior/tests/fixtures/suite-summary-golden.json` | Golden summary: the one key set and types for reader and writer, new | 2 |
 | `tests/warden_pins.sh` | Unit tests for `warden_pins.py`, new | 3 |
 | `tests/warden_ledger.sh` | Weekly, status and schedule tests | 6 |
 | `tests/warden_lessons.sh` | `suite` subcommand pass-through test | 7 |
@@ -140,6 +141,7 @@ Test command: `bash tests/behavior_harness.sh runner && bash tests/behavior_harn
 
 **Files:**
 - Create: `plugins/warden/scripts/warden_suite.py`
+- Create: `tests/behavior/tests/fixtures/suite-summary-golden.json`
 - Test: `tests/warden_suite.sh` (new; `tests/run.sh` picks it up by the `*_*.sh` glob)
 
 **Depends on:** none
@@ -148,11 +150,13 @@ Test command: `bash tests/behavior_harness.sh runner && bash tests/behavior_harn
 
 **Interfaces:**
 - Produces: every `warden_suite.py` function in the Shared interfaces section, with those exact names, parameters and return types.
+- Produces: `tests/behavior/tests/fixtures/suite-summary-golden.json`, a summary with exactly the keys and JSON types of the Shared interfaces section. It holds two `cases` entries, one `main` and one `ab`. Task 4 checks the recorder's output against its key set and types.
 - Consumes: the summary file format in the Shared interfaces section.
 
 **Brief:** This module is the one place that knows how summaries group and combine. The weekly run (Task 6) and the comparison (Task 5) both load it. It does no I/O except reading the summary folder and `suite.conf`. It prints nothing. It never writes a file.
 
 Tests (each writes hand-made summary files to a temp folder and calls the module through `python3 -I -c` with `sys.path` set to the scripts folder):
+- `load_summaries` reads the golden fixture as readable, and it reports the fixture as unreadable after the test deletes any one required key from a copy.
 - `parse_cli_version("2.1.331 (Claude Code)")` gives `2.1.331`. `parse_cli_version("garbage")` gives `None`. `minor("2.1.331")` gives `2.1`.
 - `read_suite_cases` skips comments and blank lines and keeps the file order.
 - `load_summaries` returns the summaries oldest first, and it lists a file with bad JSON and a file without `cases` as unreadable.
@@ -168,6 +172,7 @@ Tests (each writes hand-made summary files to a temp folder and calls the module
 Test command: `bash tests/warden_suite.sh`.
 
 **Steps:**
+- [ ] Write the golden fixture `tests/behavior/tests/fixtures/suite-summary-golden.json` from the Shared interfaces section.
 - [ ] Write `tests/warden_suite.sh` with the tests above.
 - [ ] Run it and see it fail, because the module does not exist.
 - [ ] Write `warden_suite.py` with the functions of the Shared interfaces section.
@@ -237,6 +242,7 @@ Test command: `bash tests/warden_pins.sh`.
 
 **Interfaces:**
 - Consumes: the six-column arms row and the arm keys from Task 1.
+- Consumes: `tests/behavior/tests/fixtures/suite-summary-golden.json` from Task 2. Do not edit it.
 - Produces: `run-behavior --suite [--case NAME] [--runs N] [--ab-model ID] [--record-dir DIR] [--yes]`.
 - Produces: `record.py --summary`, which writes the summary file of the Shared interfaces section.
 - Produces: `tests/behavior/evals/suite.conf` with exactly these lines:
@@ -282,6 +288,7 @@ Tests in `runner.sh`. They need a checkout that the test controls. Build a temp 
 
 Tests in `record_grading.sh`:
 - T41: `--summary` writes a summary with every field of the Shared interfaces section. `cli_version` is `2.1.305`, from the stub's version line.
+- T41b: the recorder's summary has exactly the top-level key set of the golden fixture, and each value has the same JSON type. Each `cases` entry has exactly the key set and types of the fixture's `cases` entries. An extra key or a missing key fails the test.
 - T42: an errored run gives `ERRORED` in the summary and `FAIL` in the Markdown row.
 - T43: a run without `--summary` writes no `.json`.
 - T44: a partial result (exit 2) writes no `.json`.
@@ -486,11 +493,11 @@ Note: Task 7 also edits `tests/behavior/stubs/claude`, which Task 1 owns. Task 1
 | 3 | 7 | It needs Task 4 and Task 5, and it edits `run-behavior` after Task 4. |
 
 Files per wave:
-- Wave 1: Task 1 owns `run-behavior`, `record.py`, `stubs/claude`, `runner.sh` and `record_grading.sh`. Task 2 owns `warden_suite.py` and `tests/warden_suite.sh`. Task 3 owns `warden_pins.py` and `tests/warden_pins.sh`.
+- Wave 1: Task 1 owns `run-behavior`, `record.py`, `stubs/claude`, `runner.sh` and `record_grading.sh`. Task 2 owns `warden_suite.py`, `tests/warden_suite.sh` and the golden summary fixture. Task 3 owns `warden_pins.py` and `tests/warden_pins.sh`.
 - Wave 2: Task 4 owns `run-behavior`, `record.py`, `suite.conf`, `.gitignore`, `tests/behavior/README.md`, `runner.sh` and `record_grading.sh`. Task 5 owns `suite_compare.py` and `tests/behavior/tests/suite_compare.sh`. Task 6 owns `warden_ledger.py` and `tests/warden_ledger.sh`.
 - Wave 3: Task 7 owns `warden-lesson`, `run-behavior`, `stubs/claude`, `README.md`, `tests/warden_lessons.sh` and `runner.sh`.
 
-After the last wave: the final review, the fix wave and the scoped re-review, then `reconciling-specs`.
+After the last wave: the final review on `opus`, the fix wave and the scoped re-review, then `reconciling-specs`. The final review checks risk 1 (the arm loop in the wrapper and the recorder) first.
 
 ## Requirement coverage
 
