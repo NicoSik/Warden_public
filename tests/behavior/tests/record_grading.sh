@@ -222,5 +222,12 @@ if [ "$RC" -eq 1 ] && row_has read-order baseline "$BASE" "4/5 (1 errored)" "gra
   pass "13 both-at-least 4, baseline 4 hits + 1 errored: baseline row FAIL, exit 1"
 else fail "13 rc=$RC: $(printf '%s\n' "$OUT" | head -n 5) $ERR"; fi
 
+# 14. a five-column conf keeps today's Results header
+conf_line "$T/h.conf" read-order "$BASE" "$CAND" at-least 4
+run_record "$REC" "$T/h.conf" "$BASE=$T/ro4.json" "$CAND=$T/ro4.json"
+if printf '%s\n' "$OUT" | grep -qxF '| case | arm | SHA | count/runs | criterion | result |'; then
+  pass "14 five-column conf: Results header has no model column"
+else fail "14 header: $(printf '%s\n' "$OUT" | grep '^| case' | head -n2) $ERR"; fi
+
 [ ! -d "$HERE/../lib/__pycache__" ] || fail "record.py left a __pycache__ beside the grader"
 harness_exit

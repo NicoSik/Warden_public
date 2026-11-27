@@ -443,6 +443,32 @@ done
 
 [ "$(evals)" -eq 6 ] && pass "17f six evals, copies add no calls" || fail "17f evals=$(evals), expected 6"
 
+# T12. a sixth column pins the model of the candidate arm
+reset
+printf 'setup-planning - HEAD at-least 4 claude-x-1\n' > "$T/arms-t12.conf"
+out=$(PATH=$GOODPATH bash "$RUN" --yes --runs 1 --arms "$T/arms-t12.conf" 2>&1); rc=$?
+if [ "$(evals)" -eq 1 ] && grep '^CALL eval' "$WARDEN_STUB_LOG" | grep -qF -- '--model claude-x-1'; then
+  pass "T12 sixth column: one eval with --model claude-x-1"
+else fail "T12 rc=$rc evals=$(evals): $(cat "$WARDEN_STUB_LOG") $out"; fi
+
+# T13. one commit, two arms (no model and claude-x-1): two evals, two rows, a model column
+reset
+printf '%s\n' 'read-order - HEAD at-least 4' 'read-order - HEAD at-least 4 claude-x-1' > "$T/arms-t13.conf"
+out=$(PATH=$GOODPATH bash "$RUN" --yes --runs 1 --arms "$T/arms-t13.conf" 2>&1); rc=$?
+rec13=$(ls "$T"/runs/*.md 2>/dev/null | head -n1)
+n_model=$(grep '^CALL eval' "$WARDEN_STUB_LOG" | grep -cF -- '--model claude-x-1')
+n_plain=$(grep '^CALL eval' "$WARDEN_STUB_LOG" | grep -vcF -- '--model')
+ok=1
+[ "$(evals)" -eq 2 ] && [ "$n_model" -eq 1 ] && [ "$n_plain" -eq 1 ] || ok=0
+[ -n "$rec13" ] || ok=0
+if [ -n "$rec13" ]; then
+  [ "$(grep -cE '^\| read-order \|' "$rec13")" -eq 2 ] || ok=0
+  grep -qE '^\| case \|.* model \|' "$rec13" || ok=0
+  grep -qF 'claude-stub-1' "$rec13" || ok=0
+  grep -E '^\| read-order \|' "$rec13" | grep -qF 'claude-x-1' || ok=0
+fi
+[ "$ok" -eq 1 ] && pass "T13 two arms on one commit: two evals, two rows, a model column" || fail "T13 rc=$rc evals=$(evals): $(cat "$WARDEN_STUB_LOG") $(grep -E '^\| ' "${rec13:-/dev/null}" 2>&1) $out"
+
 # 8. repo untouched, no scratch left
 STATUS_AFTER=$(git status --porcelain)
 [ "$STATUS_BEFORE" = "$STATUS_AFTER" ] && pass "8 git status unchanged" || fail "8 git status changed"
