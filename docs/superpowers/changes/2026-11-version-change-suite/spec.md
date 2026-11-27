@@ -170,7 +170,7 @@ of the new full pins with the combined view of the newest earlier full pins that
   - **REQ-5.10** The weekly report file MUST state whether the current pins differ from the
     pins of the last weekly run, including a patch-only difference.
   - **REQ-5.11** The weekly run MUST NOT start an eval.
-  - **REQ-5.12** When the CLI check is skipped, the weekly run MUST judge coverage by the model
+  - **REQ-5.12** When the weekly run skips the CLI check, it MUST judge coverage by the model
     ID alone.
   *Proof: T31 to T40, T51 and T52 in `tests/warden_ledger.sh`. A `git grep` shows no call from the ledger
   module to the wrapper.*
