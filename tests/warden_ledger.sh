@@ -199,6 +199,16 @@ sline n1 '{"t":"setup-call","ts":"2026-11-26T10:05:00Z","repo":"r"}'
 OUT="$(WL report)"
 case "$OUT" in *"Fixed but recurring:"*) fail "followed nudge still blocked: $OUT";; *) pass "a followed nudge leaves the block";; esac
 
+# T13b. A header counts only the sessions of the rows under it.
+sroot
+sfail s1 2026-11-12T10:00:00Z python "KeyError: 'x'"
+sfail s2 2026-11-13T10:00:00Z make "ValueError: y"
+WL mark ea fixed --fixed-on 2026-11-10 --match Error >/dev/null
+WL mark eb fixed --fixed-on 2026-11-10 --match ValueError >/dev/null
+OUT="$(WL report)"
+case "$OUT" in *"ea  fixed 2026-11-10  1 session after fix"*) pass "a header skips sessions of rows another entry won";; *) fail "header counts won rows: $OUT";; esac
+case "$OUT" in *"eb  fixed 2026-11-10  1 session after fix"*) pass "the winning entry counts its own session";; *) fail "winner header: $OUT";; esac
+
 # T14. Ignored, open and fixed decorations.
 sroot
 sfail s1 2026-11-11T10:00:00Z git "fatal: not a git repository" alpha
@@ -366,7 +376,7 @@ schedsetup() {
   rm -f "$HOME/.claude/bin"; ln -s "$CO/bin" "$HOME/.claude/bin"
   CSCRIPT="$CO/plugins/warden/scripts/warden-lesson"
   PLIST="$HARNESS_TMP/agents/com.warden.lesson-weekly.plist"
-  export WARDEN_LAUNCH_AGENTS="$HARNESS_TMP/agents" WARDEN_KICKSTART_WAIT=2
+  export WARDEN_LAUNCH_AGENTS="$HARNESS_TMP/agents"
   export WARDEN_STUB_KICKSTART_CMD="python3 -I $CSCRIPT weekly"
   clearlog
 }
@@ -392,7 +402,10 @@ unset WARDEN_STUB_KICKSTART_CMD
 START=$SECONDS
 OUT="$(CWL schedule install < /dev/null 2>&1)"; RC=$?
 ELAPSED=$((SECONDS - START))
-if [ $RC -eq 1 ] && [ $ELAPSED -ge 2 ] && [ $ELAPSED -le 6 ] && case "$OUT" in *"did not run the test"*) true;; *) false;; esac && [ "$(oslines)" = 0 ] && [ ! -e "$ROOT/weekly/test-notify" ]; then pass "an agent that does not run exits 1 and removes the marker"; else fail "T22b: rc $RC after ${ELAPSED}s: $OUT"; fi
+if [ $RC -eq 1 ] && [ $ELAPSED -ge 10 ] && [ $ELAPSED -le 14 ] && case "$OUT" in *"did not run the test"*) true;; *) false;; esac && [ "$(oslines)" = 0 ] && [ ! -e "$ROOT/weekly/test-notify" ]; then pass "an agent that does not run exits 1 and removes the marker"; else fail "T22b: rc $RC after ${ELAPSED}s: $OUT"; fi
+
+# T22e. No test-only wait variable in production code.
+if grep -rn WARDEN_KICKSTART_WAIT "$REPO_DIR/plugins/warden/scripts/" >/dev/null; then fail "WARDEN_KICKSTART_WAIT still in the scripts"; else pass "no WARDEN_KICKSTART_WAIT in the scripts"; fi
 
 # T22d. A failed test notification is reported by install.
 schedsetup

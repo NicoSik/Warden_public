@@ -140,7 +140,8 @@ def _build(include_hidden):
             main_nudges.append(n)
     recurring = []
     for slug in set(block_rows) | set(block_nudges):
-        recurring.append({"entry": by_slug[slug], "after_sessions": matches[slug]["after"],
+        own = [x for r in block_rows.get(slug, []) for x in r["session_names"]] + [n["session"] for n in block_nudges.get(slug, [])]
+        recurring.append({"entry": by_slug[slug], "after_sessions": _after_fix(by_slug[slug], own, days),
                           "rows": block_rows.get(slug, []), "nudges": block_nudges.get(slug, [])})
     recurring.sort(key=lambda b: b["entry"]["slug"])
     recurring.sort(key=lambda b: max(days[s] for s in b["after_sessions"]), reverse=True)
@@ -311,6 +312,7 @@ STALE_DAYS = 8
 LABEL = "com.warden.lesson-weekly"
 TEST_MARKER = "test-notify"
 TEST_MAX_AGE = 300
+KICKSTART_WAIT = 10
 PLIST_TEMPLATE = {
     "Label": LABEL,
     "ProgramArguments": [],
@@ -526,7 +528,7 @@ def _install():
         _remove(marker)
         print(out)
         return 1
-    limit = int(os.environ.get("WARDEN_KICKSTART_WAIT", "10"))
+    limit = KICKSTART_WAIT
     deadline = time.time() + limit
     while os.path.exists(marker) and time.time() < deadline:
         failure = _marker_text(marker)
