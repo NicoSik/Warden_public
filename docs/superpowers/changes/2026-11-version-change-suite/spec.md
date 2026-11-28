@@ -1,6 +1,6 @@
 # Spec: version-change-suite
 
-Intent: `intent.md`. Date: 2026-11-27. Status: approved.
+Intent: `intent.md`. Date: 2026-11-27. Status: approved, reconciled 2026-11-28.
 
 ## Summary
 
@@ -83,7 +83,12 @@ case, behind the wrapper's cost prompt.
   - **REQ-1.14** The cost estimate MUST count the A/B arms before the prompt.
   - **REQ-1.15** Without `--ab-model`, the main arm MUST use the account default model.
   - **REQ-1.16** The suite command MUST exit with the exit code of the wrapper.
-  *Proof: T1 to T11 in `tests/behavior/tests/runner.sh`.*
+  - **REQ-1.17** The suite command MUST exit 2 with `suite criteria not found: <path>` when the
+    suite config is missing.
+  - **REQ-1.18** The suite command MUST exit 2 with `suite does not take --model; use
+    --ab-model` when it receives `--model`. The semicolon is part of the shipped message.
+  - **REQ-1.19** In suite mode, the wrapper MUST ignore `--arms` and build its own arms rows.
+  *Proof: T1 to T11 and T57 in `tests/behavior/tests/runner.sh`.*
   *Source: outcome paragraph 6. Resolved questions on cases and criteria. Rulings on the clean
   checkout, the behind warning and the setup status stub. Design section 1.*
 
@@ -106,8 +111,8 @@ case, behind the wrapper's cost prompt.
 
 **REQ-3** After a suite record, the suite command MUST print a comparison of the combined view
 of the new full pins with the combined view of the newest earlier full pins that differ.
-  - **REQ-3.1** The comparison MUST name both groups: the summary IDs, the short SHAs, the CLI
-    versions and the models.
+  - **REQ-3.1** The comparison MUST name both groups: the summary IDs, the short SHA of the
+    newest summary of each group, the CLI versions and the models.
   - **REQ-3.2** The comparison MUST print `plugin files: changed between <old7> and <new7>` or
     `plugin files: unchanged`, by a git diff of `plugins/` between the two SHAs.
   - **REQ-3.3** When the old SHA is not in the checkout, the comparison MUST print
@@ -120,17 +125,17 @@ of the new full pins with the combined view of the newest earlier full pins that
   - **REQ-3.7** When either case result is `ERRORED`, the row MUST print
     `not comparable (<N> errored)` and `rerun: warden-lesson suite --case <case>`.
   - **REQ-3.8** A row with an `ERRORED` case result MUST NOT print `FLIPPED`.
-  - **REQ-3.9** A case in only one group MUST print `new case` or `not in old record`, without a
-    mark.
+  - **REQ-3.9** A case that is only in the new group MUST print `new case`, and a case that is
+    only in the old group prints `not in new record`, without a mark.
   - **REQ-3.10** When no earlier group has different full pins, the comparison MUST print
-    `no earlier suite record with different pins`, plus the ID of the newest summary with the
-    same full pins when one exists.
+    `no earlier suite record with different pins`, plus
+    `newest same-pins summary: <id>` when a summary with the same full pins exists.
   - **REQ-3.11** With `--ab-model`, the comparison MUST print a second block that compares the
     A/B arm with the main arm of the same run by the rules of REQ-3.5 to REQ-3.8.
   - **REQ-3.12** The comparison with the old group MUST use the main arm only.
   - **REQ-3.13** The comparison MUST skip a summary that does not parse and print
     `skipped unreadable summary: <file>` on stderr.
-  *Proof: T15 to T23 in `tests/behavior/tests/suite_compare.sh`.*
+  *Proof: T15 to T23 and G2a to G2c in `tests/behavior/tests/suite_compare.sh`.*
   *Source: outcome paragraph 7. Rulings on the two guards, `ERRORED` and the combined view.
   Design section 2.*
 
@@ -148,13 +153,17 @@ of the new full pins with the combined view of the newest earlier full pins that
     model as `unknown`.
   - **REQ-4.7** The weekly run MUST NOT copy transcript text into any file. It records only the
     model ID and the line count. (Ruling F1, 2026-11-27.)
-  *Proof: T24 to T30 in `tests/warden_ledger.sh`.*
+  - **REQ-4.8** When the job has no stored `claude` path, the weekly run MUST record
+    `claude not found at schedule install` in `cli_error`.
+  - **REQ-4.9** That case MUST NOT count as a weekly error, so `last-run` has no `error` field
+    for it and the exit code stays 0.
+  *Proof: T24 to T29 in `tests/warden_pins.sh`. T30 and T54 in `tests/warden_ledger.sh`.*
   *Source: outcome paragraphs 1 and 2. Resolved questions on the model source and the log
   window. Constraint "the weekly job uses no usage limits". REQ-4.7: ruling F1.*
 
 **REQ-5** The weekly run MUST notify when the current pins are not covered.
-  - **REQ-5.1** The weekly run MUST notify `no complete suite record yet` when no covered group
-    exists.
+  - **REQ-5.1** The weekly run MUST notify `No complete suite record yet. Run: warden-lesson
+    suite` when no covered group exists.
   - **REQ-5.2** The notification MUST repeat on each weekly run until the current pins are
     covered.
   - **REQ-5.3** A partial or single-case summary MUST stop the notification only when the
@@ -162,17 +171,24 @@ of the new full pins with the combined view of the newest earlier full pins that
   - **REQ-5.4** A CLI difference in the patch number only MUST NOT notify.
   - **REQ-5.5** An `unknown` model MUST NOT notify.
   - **REQ-5.6** The version text MUST name the old value from the newest covered group, the
-    new value and the command `warden-lesson suite`. (Ruling F2, 2026-11-27.)
+    new value and the command `warden-lesson suite`. (Ruling F2, 2026-11-27.) The lines read
+    `Model changed: <old> → <new>. Run: warden-lesson suite` and
+    `Claude Code <old X.Y> → <new X.Y>. Run: warden-lesson suite`.
   - **REQ-5.7** The weekly run MUST send one notification that holds the ledger text and the
     version text when both apply.
   - **REQ-5.8** The ledger notifications MUST fire under the same conditions as today.
   - **REQ-5.9** A week with no ledger hits and covered pins MUST send no notification.
-  - **REQ-5.10** The weekly report file MUST state whether the current pins differ from the
-    pins of the last weekly run, including a patch-only difference.
+  - **REQ-5.10** The weekly report file MUST end with one pins line that states whether the
+    current pins differ from the pins of the last weekly run, including a patch-only
+    difference. The forms are `pins: <cli> <model> (<source>), unchanged since the last weekly
+    run` and `pins: <cli> <model> (<source>), changed since the last weekly run (<old> →
+    <new>)`.
+  - **REQ-5.13** Without an earlier weekly run that has pins, the pins line MUST read
+    `pins: <cli> <model> (<source>), first weekly run`.
   - **REQ-5.11** The weekly run MUST NOT start an eval.
   - **REQ-5.12** When the weekly run skips the CLI check, it MUST judge coverage by the model
     ID alone.
-  *Proof: T31 to T40, T51 and T52 in `tests/warden_ledger.sh`. A `git grep` shows no call from the ledger
+  *Proof: T31 to T40, T51, T52 and T56 in `tests/warden_ledger.sh`. A `git grep` shows no call from the ledger
   module to the wrapper.*
   *Source: outcome paragraphs 4 and 5. Resolved question on the notification rule. Ruling on
   coverage.
@@ -193,12 +209,19 @@ of the new full pins with the combined view of the newest earlier full pins that
   - **REQ-6.5** The recorder MUST write the summary after the Markdown record, through a temp
     file and a rename.
   - **REQ-6.6** The recorder MUST NOT write a summary for a run that writes no record.
-  - **REQ-6.7** The recorder MUST NOT write a summary for a two-arm run.
-  *Proof: T41 to T44 in `record_grading.sh`.*
+  - **REQ-6.7** The recorder MUST NOT write a summary for a two-arm run. It prints
+    `summary: skipped, two-arm run` on stderr.
+  - **REQ-6.8** The recorder MUST NOT write a summary for a run with the merge-check stub. It
+    prints `summary: skipped, merge check stub` on stderr.
+  - **REQ-6.9** Each summary `model` MUST be one model ID without `<synthetic>`: the most common
+    model in the traces of that arm, or of all main-arm traces for the top-level `model`.
+  *Proof: T41 to T44, T55 and tests 45 and 46 in `record_grading.sh`.*
   *Source: design section 2 and approach A1. Ruling on `ERRORED`.*
 
 **REQ-7** Suite records MUST stay in the suite folder, outside the repository.
-  - **REQ-7.1** The suite command MUST write every suite record to the suite folder.
+  - **REQ-7.1** The suite command MUST write every suite record to the suite folder, unless
+    `--record-dir` or `WARDEN_BEHAVIOR_RECORD_DIR` names another folder. That override is a
+    test seam, and `warden-lesson suite` passes neither.
   - **REQ-7.2** A command MUST NOT delete or change a file in the suite folder after its write.
   - **REQ-7.3** `last-run` MUST hold `cli_version`, `model`, `model_source` (`logs`,
     `settings` or `unknown`) and `model_lines`.
@@ -218,12 +241,17 @@ the version check.
   - **REQ-8.3** When `claude` is not found, `schedule install` MUST succeed and print
     `claude not found; the version check is off`.
   - **REQ-8.4** `status` MUST print `suite: last run <date> on <CLI version>, <model>. Now
-    <CLI version>, <model> (<source>)` when a summary exists.
+    <CLI version>, <model> (<source>)` when a summary exists. The `Now` part reads
+    `Now unknown` when `last-run` has no pins.
   - **REQ-8.5** `status` MUST print `suite: never run` when no summary exists.
   - **REQ-8.6** `status` MUST print `version check: claude not found at schedule install` when
     the job has no stored `claude` path.
   - **REQ-8.7** The existing `status` lines MUST stay unchanged.
-  *Proof: T46 to T50 in `tests/warden_ledger.sh`.*
+  - **REQ-8.8** `warden-lesson suite` MUST exit 2 with `suite: run-behavior not found at <path>`
+    when the checkout has no wrapper.
+  - **REQ-8.9** `warden-lesson suite` MUST pass `--runs 0` to the wrapper, which refuses it.
+  *Proof: T46 to T50 in `tests/warden_ledger.sh`. The suite tests and T53 in
+  `tests/warden_lessons.sh`.*
   *Source: outcome paragraphs 3, 4 and 6. Resolved question on the `claude` path. Design
   sections 1 and 3.*
 
@@ -256,7 +284,13 @@ the version check.
 - T11: `--ab-model` doubles the agent count in the estimate.
 - T12: a six-column row passes `--model` for that arm.
 - T13: two arms on one commit with different models give two rows.
-- T14: a five-column row runs as today.
+- T14: a five-column row runs as today. The proof is the unchanged five-column tests and
+  test 14 in `record_grading.sh`, which pins the five-column header.
+- T9s: the summary of a suite run with `--ab-model` names `claude-stub-1` for the main arm and
+  `claude-x-1` for the A/B arm, read from the traces.
+- T12m: the global `--model` reaches a five-column arm, and a sixth column wins over it.
+- T12s: a second suite run on another CLI version prints a `FLIPPED` row.
+- T57: `--suite --model` exits 2 with the REQ-1.18 message. (The file labels it T14.)
 
 `tests/behavior/tests/suite_compare.sh` (hand-written summaries):
 - T15: a pass/fail flip prints `FLIPPED`.
@@ -268,14 +302,19 @@ the version check.
 - T21: the first summary prints `no earlier suite record with different pins`.
 - T22: the comparison skips an unreadable summary and names it.
 - T23: the A/B block compares the A/B arm with the main arm.
+- G2a: an old `FAIL` and a new `PASS` print `FLIPPED`.
+- G2b: an A/B block with main `FAIL` and A/B `PASS` prints `FLIPPED`.
+- G2c: `new case` and `not in new record` print on the side each one names.
 
-`tests/warden_ledger.sh` (synthetic transcripts, stub `claude`, stub `osascript`):
+`tests/warden_pins.sh` (synthetic transcripts, a stub `claude`):
 - T24: subagent files do not count.
 - T25: sidechain lines do not count.
 - T26: one `/model` switch in a week of sessions does not change the model.
 - T27: a tie goes to the model of the newest tied line.
 - T28: an empty log window falls back to `settings.json` and records `settings`.
 - T29: an alias in `settings.json` gives `unknown`.
+
+`tests/warden_ledger.sh` (synthetic transcripts, stub `claude`, stub `osascript`):
 - T30: no transcript text appears in the weekly folder.
 - T31: an empty suite folder notifies `no complete suite record yet`.
 - T32: a model change notifies.
@@ -296,12 +335,24 @@ the version check.
 - T51: with a failed CLI check, a covered model sends no version notification.
 - T52: a newer summary with an `ERRORED` case does not become the old value. The text names
   the newest covered group.
+- T54: without a stored `claude` path, the weekly run records `cli_error`, has no `error`
+  field, and exits 0.
+- T56: the first weekly report ends with `pins: ... first weekly run`.
+
+`tests/warden_lessons.sh`:
+- T53: `warden-lesson suite --runs 0` passes `--runs 0` to the wrapper.
 
 `tests/behavior/tests/record_grading.sh`:
 - T41: a suite run writes a summary with the fields of REQ-6.1 and REQ-6.2.
 - T42: an errored run gives `ERRORED` in the summary and `FAIL` in the Markdown record.
 - T43: a two-arm run writes no summary.
 - T44: a run without a record writes no summary.
+- T55: a merge-check stub run writes no summary and prints the REQ-6.8 notice.
+- Test 45: a `<synthetic>` trace line never reaches the summary models.
+- Test 46: a same-commit model A/B row shows the `model` column.
+
+The file labels two tests "43": the spec's T43 and a test that a run without `--summary`
+writes no summary.
 
 ## Non-goals
 
@@ -356,3 +407,30 @@ Nicolai ruled on both concerns on 2026-11-27.
 - The weekly run and the comparison read only summaries, never the Markdown records.
 - The checkout's lesson script runs the checkout's wrapper. The live plugins read from
   `~/Warden_public`, so `warden-lesson suite` runs the wrapper on `main` there.
+
+## Reconciled 2026-11-28
+
+Nicolai ruled on each divergence on 2026-11-28.
+
+- D1, REQ-1.12 and REQ-8.9: `warden-lesson suite --runs 0` ran 5 runs. Ruling: the code was
+  wrong. The command now passes `--runs 0`, and the wrapper refuses it.
+- D2, REQ-4.8 and REQ-4.9: without a stored `claude`, every weekly run exited 1 and showed an
+  error. Ruling: the code was wrong for that case only. A failed `--version` call still counts
+  as an error.
+- D3, REQ-6.8: a merge-check stub run wrote a summary that counted toward coverage. Ruling:
+  the code was wrong. REQ-6.8 is new.
+- D4, REQ-5.10 and REQ-5.13: the pins line format differed from the plan. Ruling: the spec was
+  wrong about the format. The first-run text read `unknown unknown`. Ruling: the code was
+  wrong. REQ-5.13 is new.
+- D5, REQ-3.9: the spec string `not in old record` named the wrong side. Ruling: the spec was
+  wrong.
+- D6, REQ-5.1 and REQ-5.6: the notification lines start with a capital letter and name the command.
+  Ruling: the spec was wrong.
+- D7, REQ-7.1: `--record-dir` and `WARDEN_BEHAVIOR_RECORD_DIR` override the suite folder as a
+  test seam. Ruling: the spec was wrong.
+- D8, REQ-3.1: the header names one short SHA per group. Ruling: the spec was wrong.
+- D9, REQ-1.17 to REQ-1.19, REQ-3.10, REQ-6.7, REQ-8.4 and REQ-8.8: messages and behavior the
+  spec did not describe. Ruling: the spec was wrong. The spec now records them as shipped.
+- D10, the test list: T24 to T29 live in `tests/warden_pins.sh`, and the build added tests.
+  Ruling: the spec was wrong.
+- REQ-6.9 records the repair of review finding C1: one filtered model per summary arm.
