@@ -18,6 +18,11 @@ tests/behavior/run-behavior [--case <name>|all] [--runs N] [--model ID] [--arms 
   `WARDEN_BEHAVIOR_RECORD_DIR`, then the default folder below.
 - `--yes` skips the confirmation. Only the offline test uses it.
 
+An arms row is `<case> <base> <cand> <rule> <count> [<model>]`. The optional sixth column pins the model of the
+candidate arm (it passes `--model <model>` for that arm). An arm key is `<sha>` without a model and
+`<sha>@<model>` with one, so two arms can share one commit. Their traces go to `<sha7>` and `<sha7>-<model>`.
+The Results table gets a `model` column after `SHA` only when two arms on one commit differ in model.
+
 A baseline of `-` in an arms row means candidate only. The wrapper resolves no baseline, runs and
 counts one arm for that row, and the record has no baseline row for it.
 
@@ -58,6 +63,33 @@ folders, so before it runs the wrapper copies every trace that the results name 
 `<id>/traces/<case>/<arm-sha7>/run-<i>.jsonl`. After the record is written, the wrapper deletes the oldest
 run folders (by modification time) until 20 remain. It touches only entries whose name is six lowercase
 hexadecimal characters.
+
+## Suite mode
+
+`run-behavior --suite [--case NAME] [--runs N] [--ab-model ID] [--record-dir DIR] [--yes]` runs the
+criteria of `evals/suite.conf` (one line per case: `<case> <rule> <count>`; `#` starts a comment) against
+the HEAD commit of this repository. Before the preflight it checks, in order, and each failure exits 2:
+
+1. The branch is `main`: `suite runs only on main (current: <branch>)`.
+2. `git status --porcelain -- plugins tests/behavior` is empty: `suite needs a clean checkout: <path>`.
+3. Every eval directory except `_fixture` has a `suite.conf` line (`no suite criterion for <case>`), and every
+   line has a directory (`no eval directory for <case>`).
+
+It then prints `warning: main is <N> commits behind fork/main (last fetch)` when `refs/remotes/fork/main` is
+ahead of `main`. It never fetches. A missing `fork/main` prints no warning.
+
+The wrapper writes its own arms file into its scratch folder: one candidate-only row per case at HEAD. With
+`--ab-model ID` it adds a second row per case with `ID` in the sixth column. The estimate counts distinct case
+names, so `--ab-model` over 5 cases prints `Agents: 50 (5 cases, 10 arms x 5 runs)`. The default record folder is
+`$WARDEN_LESSON_ROOT/suite` (or `~/.claude/lessons/suite`); `--record-dir` and `WARDEN_BEHAVIOR_RECORD_DIR`
+keep their precedence. Suite mode never deletes a file in the record folder.
+
+The recorder runs with `--summary`. After the Markdown record it writes `<UTC date>-<id>.json` beside it
+(through a `.tmp` file and `os.replace`): one object with `schema`, `id`, `date`, `sha`, `cli_version`,
+`cli_version_raw`, `model`, `graphify_version`, `fixture_hash`, `runs` and `cases`. Each case entry holds
+`case`, `arm` (`main`, or `ab` when a model column was given), `model`, `count`, `errored`, `runs`, `rule`,
+`threshold` and `result` (`PASS`, `FAIL`, or `ERRORED` when any run errored). No summary is written without
+`--summary`, or when the recorder exits 2 before the Markdown write.
 
 ## Cost
 

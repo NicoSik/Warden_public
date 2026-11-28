@@ -2,3 +2,4 @@
 *.warden-backup-*
 tests/tmp/
 graphify-out/
+__pycache__/

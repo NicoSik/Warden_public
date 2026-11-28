@@ -2,11 +2,12 @@
 """Grade `claude plugin eval --json` results and write the run record.
 
 Usage: record.py --conf FILE --out-dir DIR --runs N --graphify-version V
-                 --fixture-hash H --id ID [--merge-check-stub] --result SHA=FILE [--result ...]
+                 --fixture-hash H --id ID [--merge-check-stub] [--summary] --result SHA=FILE [--result ...]
 
 FILE lines of --conf: <case> <baseline-sha or -> <candidate-sha> <at-least|at-most|both-at-least> <count>.
 both-at-least gates the baseline arm too, so it needs a baseline sha.
 --merge-check-stub marks a test run: the record pins "Merge check: STUB", every result reads STUB, and the exit is 1.
+--summary also writes <date>-<id>.json beside the Markdown record (the suite summary), after the Markdown write.
 Exit: 0 all criteria met, 1 a candidate criterion failed, 2 bad or partial result.
 """
 import argparse
@@ -28,6 +29,14 @@ LABEL = "list-price estimate; not billed on a subscription login, uses your plan
 ATTEMPTS = ("Runs measure attempts. Inside the eval sandbox on macOS, git, the home-installed "
             "Graphify binary, and `.git/config` writes are blocked, so `graphify-setup` and "
             "`graphify query` fail inside a run.")
+
+
+VERSION_RE = re.compile(r"\d+\.\d+\.\d+")  # copied from warden_suite.parse_cli_version; this file imports nothing from plugins/
+
+
+def parse_cli_version(raw):
+    m = VERSION_RE.search(raw or "")
+    return m.group(0) if m else None
 
 
 PATH_RE = re.compile(r"(?:~|(?<![\w.~]))/[^\s()]+")
@@ -157,6 +166,7 @@ def main():
     ap.add_argument("--id", required=True)
     ap.add_argument("--raw-dir", default="")
     ap.add_argument("--merge-check-stub", action="store_true")
+    ap.add_argument("--summary", action="store_true")
     ap.add_argument("--result", action="append", default=[])
     ap.add_argument("--setup-status", action="append", default=[])
     a = ap.parse_args()
@@ -207,6 +217,7 @@ def main():
                     shas.append(s)
 
         rows = []
+        summary_cases = []
         run_lines = []
         terminal = []
         total_cost = 0.0
@@ -245,6 +256,7 @@ def main():
                         "; error: %s" % redact(r.get("error")) if r.get("error") else ""))
                 what = "graph-first" if case.startswith("read-order") else "triggered"
                 op = ">=" if rule in AT_LEAST else "<="
+                ok = None
                 if arm == "candidate" or rule == "both-at-least":
                     ok = hits >= int(count) if rule in AT_LEAST else hits <= int(count)
                     if errored:
@@ -260,6 +272,11 @@ def main():
                 armdir = sha[:7] + ("-" + key.split("@", 1)[1] if "@" in key else "")
                 mods = trace_models(a.raw_dir, case, armdir)
                 mcell = ", ".join(sorted(mods)) if mods else (key.split("@", 1)[1] if "@" in key else "unknown")
+                if arm == "candidate":
+                    summary_cases.append({"case": case, "arm": "ab" if amodel else "main", "model": mcell,
+                                          "count": hits, "errored": errored, "runs": len(runs), "rule": rule,
+                                          "threshold": int(count),
+                                          "result": "ERRORED" if errored else ("PASS" if ok else "FAIL")})
                 rows.append((case, arm, sha, mcell, "%d/%d%s" % (hits, len(runs), " (%d errored)" % errored if errored else ""), crit, verdict))
 
         today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
@@ -321,6 +338,20 @@ def main():
         path = os.path.join(a.out_dir, "%s-%s.md" % (today, a.id))
         with open(path, "w") as f:
             f.write(text)
+        if a.summary:
+            raw_ver = sorted(v for v in versions if v)
+            raw_ver = raw_ver[0] if raw_ver else ""
+            main = [c for c in summary_cases if c["arm"] == "main"]
+            summary = {"schema": 1, "id": a.id,
+                       "date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                       "sha": conf[0][2], "cli_version": parse_cli_version(raw_ver), "cli_version_raw": raw_ver,
+                       "model": (main or summary_cases)[0]["model"], "graphify_version": a.graphify_version,
+                       "fixture_hash": a.fixture_hash, "runs": int(a.runs), "cases": summary_cases}
+            spath = os.path.join(a.out_dir, "%s-%s.json" % (today, a.id))
+            with open(spath + ".tmp", "w") as f:
+                json.dump(summary, f, indent=2)
+                f.write("\n")
+            os.replace(spath + ".tmp", spath)
         print("\n".join(out[out.index(hdr):out.index("## Runs") - 1]))
         print("record: " + path)
         if terminal:

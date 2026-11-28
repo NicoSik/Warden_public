@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Rerunnable behavior baseline for the vendored Superpowers plugin.
 # Usage: run-behavior [--case <name>|all] [--runs N] [--model ID] [--arms FILE] [--record-dir DIR] [--yes]
+#        run-behavior --suite [--case NAME] [--runs N] [--ab-model ID] [--record-dir DIR] [--yes]
 # Exit: 0 all criteria met, 1 a criterion failed, 2 usage error or partial eval, 3 preflight failed.
 set -uo pipefail
 
@@ -8,13 +9,14 @@ HERE=$(cd -P "$(dirname "$0")" && pwd)
 REPO=$(cd -P "$HERE/../.." && pwd)
 EVALS="$HERE/evals"
 CONF="$EVALS/arms.conf"
-RECORD_DIR="${WARDEN_BEHAVIOR_RECORD_DIR:-$REPO/docs/superpowers/changes/2026-10-rerunnable-behavior-baseline/runs}"
+RECORD_DIR="${WARDEN_BEHAVIOR_RECORD_DIR:-}"
 RAW_BASE="${WARDEN_BEHAVIOR_RAW_DIR:-$HOME/.cache/warden-behavior}"
 LABEL="list-price estimate; not billed on a subscription login, uses your plan's usage limits"
 
 SETUP_STUB_CASES="read-order read-order-heldout"
-CASE=all RUNS=5 MODEL="" YES=0
-usage() { echo "usage: run-behavior [--case <name>|all] [--runs N] [--model ID] [--arms FILE] [--record-dir DIR] [--yes]" >&2; exit 2; }
+CASE=all RUNS=5 MODEL="" YES=0 SUITE=0 ABMODEL=""
+usage() { echo "usage: run-behavior [--case <name>|all] [--runs N] [--model ID] [--arms FILE] [--record-dir DIR] [--yes]
+       run-behavior --suite [--case NAME] [--runs N] [--ab-model ID] [--record-dir DIR] [--yes]" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --case) [ $# -ge 2 ] || usage; CASE="$2"; shift ;;
@@ -23,12 +25,40 @@ while [ $# -gt 0 ]; do
     --arms) [ $# -ge 2 ] || usage; CONF="$2"; shift ;;
     --record-dir) [ $# -ge 2 ] || usage; RECORD_DIR="$2"; shift ;;
     --yes) YES=1 ;;
+    --suite) SUITE=1 ;;
+    --ab-model) [ $# -ge 2 ] || usage; ABMODEL="$2"; shift ;;
     *) usage ;;
   esac
   shift
 done
 case "$RUNS" in ''|*[!0-9]*|0) usage ;; esac
-[ -f "$CONF" ] || { echo "arms file not found: $CONF" >&2; exit 2; }
+[ -z "$ABMODEL" ] || [ "$SUITE" -eq 1 ] || usage
+[ "$SUITE" -eq 1 ] || [ -f "$CONF" ] || { echo "arms file not found: $CONF" >&2; exit 2; }
+SUMMARY_ARGS=()
+if [ "$SUITE" -eq 1 ]; then
+  SUITE_CONF="$EVALS/suite.conf"
+  SUMMARY_ARGS=(--summary)
+  [ -n "$RECORD_DIR" ] || RECORD_DIR="${WARDEN_LESSON_ROOT:-$HOME/.claude/lessons}/suite"
+  # Suite checks come before the preflight, in this order.
+  branch=$(git -C "$REPO" symbolic-ref --short -q HEAD 2>/dev/null) || branch=HEAD
+  [ "$branch" = main ] || { echo "suite runs only on main (current: $branch)" >&2; exit 2; }
+  dirty=$(git -C "$REPO" status --porcelain -- plugins tests/behavior | head -n1 | cut -c4-)
+  [ -z "$dirty" ] || { echo "suite needs a clean checkout: $dirty" >&2; exit 2; }
+  [ -f "$SUITE_CONF" ] || { echo "suite criteria not found: $SUITE_CONF" >&2; exit 2; }
+  for d in "$EVALS"/*/; do
+    name=$(basename "$d")
+    [ "$name" = _fixture ] && continue
+    awk -v n="$name" '$1 !~ /^#/ && $1 == n {f=1} END {exit !f}' "$SUITE_CONF" || { echo "no suite criterion for $name" >&2; exit 2; }
+  done
+  while read -r name _; do
+    case "$name" in ''|'#'*) continue ;; esac
+    [ -d "$EVALS/$name" ] && [ "$name" != _fixture ] || { echo "no eval directory for $name" >&2; exit 2; }
+  done < "$SUITE_CONF"
+  behind=$(git -C "$REPO" rev-list --count main..refs/remotes/fork/main 2>/dev/null) || behind=0
+  [ "${behind:-0}" -le 0 ] || echo "warning: main is $behind commits behind fork/main (last fetch)"
+else
+  [ -n "$RECORD_DIR" ] || RECORD_DIR="$REPO/docs/superpowers/changes/2026-10-rerunnable-behavior-baseline/runs"
+fi
 
 CHECK=(python3 -I "$HERE/lib/merge_check.py")
 MERGE_STUB=()
@@ -67,6 +97,18 @@ resolve_or_fetch() {
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/warden-behavior.XXXXXX") || exit 2
 trap 'rm -rf "$WORK"' EXIT
 
+if [ "$SUITE" -eq 1 ]; then
+  # Suite mode writes its own arms file: one candidate-only row per case at HEAD, plus one pinned-model row with --ab-model.
+  headsha=$(git -C "$REPO" rev-parse HEAD) || exit 2
+  CONF="$WORK/suite-arms.conf"
+  : > "$CONF"
+  while read -r name rule count; do
+    case "$name" in ''|'#'*) continue ;; esac
+    printf '%s - %s %s %s\n' "$name" "$headsha" "$rule" "$count" >> "$CONF"
+    [ -z "$ABMODEL" ] || printf '%s - %s %s %s %s\n' "$name" "$headsha" "$rule" "$count" "$ABMODEL" >> "$CONF"
+  done < "$SUITE_CONF"
+fi
+
 # Resolve arms.conf into full SHAs, filtered by --case.
 : > "$WORK/conf"
 : > "$WORK/keys"
@@ -85,7 +127,7 @@ while read -r c base cand rule count amodel; do
 done < "$CONF"
 [ -s "$WORK/conf" ] || { echo "no case matches '$CASE'" >&2; exit 2; }
 
-NCASES=$(wc -l < "$WORK/conf" | tr -d ' ')
+NCASES=$(awk '!seen[$1]++' "$WORK/conf" | wc -l | tr -d ' ')
 NARMS=0 LO=0 HI=0
 while read -r c base _ _ _; do
   arms=2; [ "$base" = "-" ] && arms=1
@@ -160,7 +202,7 @@ PY
   dest="$scratch/plugins/superpowers/warden-evals"
   mkdir -p "$dest"
   cp -R "$EVALS/." "$dest/"
-  rm -f "$dest/arms.conf"
+  rm -f "$dest/arms.conf" "$dest/suite.conf"
   res="$WORK/result-$n.json"
   model_args=()
   [ -n "$armmodel" ] && model_args=(--model "$armmodel")
@@ -224,7 +266,7 @@ done
 FIXTURE_HASH=$(git -C "$REPO" rev-parse HEAD:tests/behavior/evals/_fixture/storefront)
 python3 -I "$HERE/lib/record.py" --conf "$WORK/conf" --out-dir "$RECORD_DIR" --runs "$RUNS" \
   --graphify-version "$GRAPHIFY_VERSION" --fixture-hash "$FIXTURE_HASH" --id "$ID" \
-  --raw-dir "$RAW_BASE/$ID" ${MERGE_STUB[@]+"${MERGE_STUB[@]}"} "${RESULT_ARGS[@]}"
+  --raw-dir "$RAW_BASE/$ID" ${SUMMARY_ARGS[@]+"${SUMMARY_ARGS[@]}"} ${MERGE_STUB[@]+"${MERGE_STUB[@]}"} "${RESULT_ARGS[@]}"
 rc=$?
 
 # Keep the raw results outside the repo.

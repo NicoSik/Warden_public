@@ -490,4 +490,111 @@ if [ -e tests/behavior/lib/__pycache__ ]; then
   fail "14 record.py left tests/behavior/lib/__pycache__"; rm -rf tests/behavior/lib/__pycache__
 else pass "14 no bytecode left in tests/behavior/lib"; fi
 
+# ---- Suite mode (T1-T11 of task 4). Each test builds its own temp checkout.
+SRC_ROOT=$(pwd)
+# mk_suite_checkout: copy plugins/, tests/behavior/ and .gitignore of the working tree (no __pycache__)
+# into a new temp repository on main with one commit, and print its path.
+mk_suite_checkout() {
+  local d; d=$(mktemp -d "$T/suite.XXXXXX") || return 1
+  ( cd "$SRC_ROOT" && tar --exclude __pycache__ -cf - plugins tests/behavior .gitignore ) | tar -xf - -C "$d" || return 1
+  git -C "$d" init -q -b main && git -C "$d" config user.name t && git -C "$d" config user.email t@example.com \
+    && git -C "$d" config commit.gpgsign false && git -C "$d" add -A && git -C "$d" commit -q -m init || return 1
+  printf '%s\n' "$d"
+}
+# srun CHECKOUT ARGS...: run the temp copy of the wrapper in suite mode
+srun() { local d="$1"; shift; PATH=$GOODPATH bash "$d/tests/behavior/run-behavior" --suite "$@" 2>&1; }
+
+# T1. not on main: exit 2, the message, no eval; the same without graphify on PATH
+reset; C=$(mk_suite_checkout); git -C "$C" checkout -q -b other
+out=$(srun "$C" --yes); rc=$?
+[ "$rc" -eq 2 ] && [ "$(evals)" -eq 0 ] && printf '%s' "$out" | grep -qF 'suite runs only on main (current: other)' \
+  && pass "T1 branch other: exit 2, message, no eval" || fail "T1 rc=$rc evals=$(evals): $out"
+out=$(PATH="$T/bin-nographify:$SYSPATH" WARDEN_STUB_EXPECT_CLAUDE="$T/bin-nographify/claude" bash "$C/tests/behavior/run-behavior" --suite --yes 2>&1); rc=$?
+[ "$rc" -eq 2 ] && printf '%s' "$out" | grep -qF 'suite runs only on main (current: other)' \
+  && pass "T1 without graphify: same message, exit 2 not 3" || fail "T1 no graphify rc=$rc: $out"
+
+# T2. an edit under plugins/ is dirty
+reset; C=$(mk_suite_checkout); printf 'x\n' >> "$C/plugins/superpowers/README.md"
+out=$(srun "$C" --yes); rc=$?
+[ "$rc" -eq 2 ] && [ "$(evals)" -eq 0 ] && printf '%s' "$out" | grep -qF 'suite needs a clean checkout: plugins/' \
+  && pass "T2 edit under plugins/: exit 2, clean-checkout message" || fail "T2 rc=$rc: $out"
+
+# T3. an untracked file under tests/behavior
+reset; C=$(mk_suite_checkout); : > "$C/tests/behavior/x"
+out=$(srun "$C" --yes); rc=$?
+[ "$rc" -eq 2 ] && [ "$(evals)" -eq 0 ] && printf '%s' "$out" | grep -qF 'suite needs a clean checkout: tests/behavior/x' \
+  && pass "T3 untracked tests/behavior/x: exit 2, clean-checkout message" || fail "T3 rc=$rc: $out"
+
+# T4. an untracked file at the root does not matter
+reset; C=$(mk_suite_checkout); : > "$C/notes.txt"
+out=$(srun "$C" --yes); rc=$?
+[ "$rc" -eq 0 ] && [ "$(evals)" -eq 5 ] && pass "T4 untracked notes.txt at the root: the suite runs (5 evals)" || fail "T4 rc=$rc evals=$(evals): $out"
+
+# T5. fork/main two commits ahead: warning before Start, no fetch
+reset; C=$(mk_suite_checkout)
+c1=$(git -C "$C" commit-tree 'HEAD^{tree}' -p HEAD -m a); c2=$(git -C "$C" commit-tree 'HEAD^{tree}' -p "$c1" -m b)
+git -C "$C" update-ref refs/remotes/fork/main "$c2"
+out=$(printf 'n\n' | PATH=$GOODPATH bash "$C/tests/behavior/run-behavior" --suite 2>&1); rc=$?
+w=$(printf '%s\n' "$out" | grep -nF 'warning: main is 2 commits behind fork/main (last fetch)' | head -n1 | cut -d: -f1)
+s=$(printf '%s\n' "$out" | grep -n 'Start' | head -n1 | cut -d: -f1)
+if [ -n "$w" ] && [ -n "$s" ] && [ "$w" -lt "$s" ] && [ "$(git -C "$C" rev-parse refs/remotes/fork/main)" = "$c2" ] \
+   && [ ! -e "$C/.git/FETCH_HEAD" ] && ! grep -q fetch "$WARDEN_STUB_LOG"; then
+  pass "T5 behind fork/main: warning before Start, no fetch"
+else fail "T5 w=$w s=$s: $out"; fi
+# no fork/main: no warning
+reset; C=$(mk_suite_checkout); out=$(srun "$C" --yes); printf '%s' "$out" | grep -q 'commits behind' && fail "T5 warning without fork/main" || pass "T5 no fork/main: no warning"
+
+# T6. an eval directory without a criterion
+reset; C=$(mk_suite_checkout); mkdir "$C/tests/behavior/evals/new-case"; : > "$C/tests/behavior/evals/new-case/x"
+git -C "$C" add -A && git -C "$C" commit -q -m new
+out=$(srun "$C" --yes); rc=$?
+[ "$rc" -eq 2 ] && [ "$(evals)" -eq 0 ] && printf '%s' "$out" | grep -qF 'no suite criterion for new-case' \
+  && pass "T6 new eval directory: exit 2, no suite criterion" || fail "T6 rc=$rc: $out"
+
+# T7. a criterion without an eval directory
+reset; C=$(mk_suite_checkout); printf 'ghost at-least 1\n' >> "$C/tests/behavior/evals/suite.conf"
+git -C "$C" add -A && git -C "$C" commit -q -m ghost
+out=$(srun "$C" --yes); rc=$?
+[ "$rc" -eq 2 ] && [ "$(evals)" -eq 0 ] && printf '%s' "$out" | grep -qF 'no eval directory for ghost' \
+  && pass "T7 extra suite.conf line: exit 2, no eval directory" || fail "T7 rc=$rc: $out"
+
+# T8. read-order cases run on the setup status stub, the setup cases on the real script
+reset; C=$(mk_suite_checkout); rm -rf "$T/snap8"; sha=$(git -C "$C" rev-parse HEAD)
+out=$(PATH=$GOODPATH STUB_SNAPSHOT_DIR="$T/snap8" bash "$C/tests/behavior/run-behavior" --suite --yes 2>&1); rc=$?
+rec8=$(ls "$T"/runs/*.md 2>/dev/null | head -n1); ok=1
+[ -n "$rec8" ] || ok=0
+for c in read-order read-order-heldout; do grep -qF "Setup status of $sha in $c: stubbed (ready)" "$rec8" || ok=0; done
+grep -q 'Setup status of .* in setup-' "$rec8" && ok=0
+STUBF="$C/tests/behavior/lib/setup-status-stub"
+for n in 1 2 3; do cmp -s "$T/snap8/call-$n/scripts/graphify-setup" "$STUBF" && ok=0; [ -f "$T/snap8/call-$n/scripts/graphify-setup" ] || ok=0; done
+for n in 4 5; do cmp -s "$T/snap8/call-$n/scripts/graphify-setup" "$STUBF" || ok=0; done
+[ "$ok" -eq 1 ] && pass "T8 read-order on the status stub, setup cases on the real script" || fail "T8 rc=$rc: $(grep -i 'setup status' "${rec8:-/dev/null}") $out"
+
+# T9. record and summary land in the record folder; a pre-existing file stays
+reset; C=$(mk_suite_checkout); printf 'keep\n' > "$T/runs/keep.md"; cp "$T/runs/keep.md" "$T/keep.orig"
+out=$(srun "$C" --yes); rc=$?
+nmd=$(ls "$T"/runs/2*.md 2>/dev/null | wc -l | tr -d ' '); njs=$(ls "$T"/runs/2*.json 2>/dev/null | wc -l | tr -d ' ')
+[ "$nmd" -eq 1 ] && [ "$njs" -eq 1 ] && cmp -s "$T/runs/keep.md" "$T/keep.orig" \
+  && pass "T9 record and summary in the record folder, the old file unchanged" || fail "T9 md=$nmd json=$njs: $out"
+# default folder in suite mode: $WARDEN_LESSON_ROOT/suite
+reset; C=$(mk_suite_checkout); rm -rf "$T/lroot"
+out=$(env -u WARDEN_BEHAVIOR_RECORD_DIR PATH=$GOODPATH WARDEN_LESSON_ROOT="$T/lroot" bash "$C/tests/behavior/run-behavior" --suite --yes 2>&1); rc=$?
+[ -n "$(ls "$T"/lroot/suite/2*.json 2>/dev/null)" ] && [ -n "$(ls "$T"/lroot/suite/2*.md 2>/dev/null)" ] \
+  && pass "T9 default folder is WARDEN_LESSON_ROOT/suite" || fail "T9 default folder: $(ls -R "$T/lroot" 2>&1) $out"
+
+# T10. --case read-order runs one eval
+reset; C=$(mk_suite_checkout)
+out=$(srun "$C" --yes --case read-order); rc=$?
+[ "$(evals)" -eq 1 ] && pass "T10 --case read-order: one eval" || fail "T10 rc=$rc evals=$(evals): $out"
+
+# T11. --ab-model doubles the arms; the case count stays distinct case names
+reset; C=$(mk_suite_checkout)
+out=$(printf 'n\n' | PATH=$GOODPATH bash "$C/tests/behavior/run-behavior" --suite --ab-model claude-x-1 2>&1)
+printf '%s' "$out" | grep -qF 'Agents: 50 (5 cases, 10 arms x 5 runs)' && printf '%s' "$out" | grep -qF 'Start 50 agents?' \
+  && pass "T11 --ab-model: Agents: 50 (5 cases, 10 arms x 5 runs)" || fail "T11 estimate: $out"
+reset; out=$(printf 'n\n' | PATH=$GOODPATH bash "$C/tests/behavior/run-behavior" --suite --ab-model claude-x-1 --runs 1 2>&1)
+printf '%s' "$out" | grep -qF 'Agents: 10 ' && pass "T11 --runs 1: Agents: 10" || fail "T11 runs 1: $out"
+reset; out=$(srun "$C" --yes --ab-model claude-x-1 --runs 1)
+printf '%s' "$out" | grep -cE '^\| read-order \|' | grep -q 2 && pass "T11 ab arms: two read-order rows" || fail "T11 ab rows: $out"
+
 [ "$FAILURES" -eq 0 ]
