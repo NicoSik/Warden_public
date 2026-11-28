@@ -156,6 +156,46 @@ def trace_models(raw_dir, case=None, arm_dir=None):
     return found
 
 
+def trace_model_seq(raw_dir, case, arm_dir):
+    """message.model of every assistant line of one arm's kept traces, in read order, without <synthetic>."""
+    seq = []
+    top = os.path.join(raw_dir or "", "traces", case, arm_dir)
+    for root, dirs, files in os.walk(top):
+        dirs.sort()
+        for name in sorted(files):
+            if not name.endswith(".jsonl"):
+                continue
+            try:
+                with open(os.path.join(root, name)) as f:
+                    for ln in f:
+                        try:
+                            d = json.loads(ln)
+                        except ValueError:
+                            continue
+                        if not isinstance(d, dict) or d.get("type") != "assistant":
+                            continue
+                        m = d.get("message")
+                        m = m.get("model") if isinstance(m, dict) else None
+                        if isinstance(m, str) and m and m != "<synthetic>":
+                            seq.append(m)
+            except OSError:
+                continue
+    return seq
+
+
+def most_common(seq):
+    """The most common model; a tie goes to the model of the last line read."""
+    if not seq:
+        return None
+    counts = {}
+    for m in seq:
+        counts[m] = counts.get(m, 0) + 1
+    best = max(counts.values())
+    for m in reversed(seq):
+        if counts[m] == best:
+            return m
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--conf", required=True)
@@ -218,6 +258,7 @@ def main():
 
         rows = []
         summary_cases = []
+        main_seq = []
         run_lines = []
         terminal = []
         total_cost = 0.0
@@ -273,7 +314,11 @@ def main():
                 mods = trace_models(a.raw_dir, case, armdir)
                 mcell = ", ".join(sorted(mods)) if mods else (key.split("@", 1)[1] if "@" in key else "unknown")
                 if arm == "candidate":
-                    summary_cases.append({"case": case, "arm": "ab" if amodel else "main", "model": mcell,
+                    seq = trace_model_seq(a.raw_dir, case, armdir)
+                    if not amodel:
+                        main_seq.extend(seq)
+                    smodel = most_common(seq) or (amodel or "unknown")
+                    summary_cases.append({"case": case, "arm": "ab" if amodel else "main", "model": smodel,
                                           "count": hits, "errored": errored, "runs": len(runs), "rule": rule,
                                           "threshold": int(count),
                                           "result": "ERRORED" if errored else ("PASS" if ok else "FAIL")})
@@ -338,14 +383,16 @@ def main():
         path = os.path.join(a.out_dir, "%s-%s.md" % (today, a.id))
         with open(path, "w") as f:
             f.write(text)
-        if a.summary:
+        if a.summary and any(r[1] != "-" for r in conf):
+            print("summary: skipped, two-arm run", file=sys.stderr)
+        elif a.summary:
             raw_ver = sorted(v for v in versions if v)
             raw_ver = raw_ver[0] if raw_ver else ""
             main = [c for c in summary_cases if c["arm"] == "main"]
             summary = {"schema": 1, "id": a.id,
                        "date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                        "sha": conf[0][2], "cli_version": parse_cli_version(raw_ver), "cli_version_raw": raw_ver,
-                       "model": (main or summary_cases)[0]["model"], "graphify_version": a.graphify_version,
+                       "model": most_common(main_seq) or (main or summary_cases)[0]["model"], "graphify_version": a.graphify_version,
                        "fixture_hash": a.fixture_hash, "runs": int(a.runs), "cases": summary_cases}
             spath = os.path.join(a.out_dir, "%s-%s.json" % (today, a.id))
             with open(spath + ".tmp", "w") as f:

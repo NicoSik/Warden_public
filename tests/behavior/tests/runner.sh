@@ -451,6 +451,20 @@ if [ "$(evals)" -eq 1 ] && grep '^CALL eval' "$WARDEN_STUB_LOG" | grep -qF -- '-
   pass "T12 sixth column: one eval with --model claude-x-1"
 else fail "T12 rc=$rc evals=$(evals): $(cat "$WARDEN_STUB_LOG") $out"; fi
 
+# T12m. a global --model reaches an arm without a sixth column; the sixth column wins over it
+reset
+printf 'setup-planning - HEAD at-least 4\n' > "$T/arms-t12m.conf"
+out=$(PATH=$GOODPATH bash "$RUN" --yes --runs 1 --model claude-g-1 --arms "$T/arms-t12m.conf" 2>&1); rc=$?
+if [ "$(evals)" -eq 1 ] && grep '^CALL eval' "$WARDEN_STUB_LOG" | grep -qF -- '--model claude-g-1'; then
+  pass "T12m global --model with a five-column row: the eval gets it"
+else fail "T12m rc=$rc: $(cat "$WARDEN_STUB_LOG") $out"; fi
+reset
+out=$(PATH=$GOODPATH bash "$RUN" --yes --runs 1 --model claude-g-1 --arms "$T/arms-t12.conf" 2>&1); rc=$?
+if [ "$(evals)" -eq 1 ] && grep '^CALL eval' "$WARDEN_STUB_LOG" | grep -qF -- '--model claude-x-1' \
+   && ! grep '^CALL eval' "$WARDEN_STUB_LOG" | grep -qF -- 'claude-g-1'; then
+  pass "T12m sixth column wins over global --model"
+else fail "T12m sixth rc=$rc: $(cat "$WARDEN_STUB_LOG") $out"; fi
+
 # T13. one commit, two arms (no model and claude-x-1): two evals, two rows, a model column
 reset
 printf '%s\n' 'read-order - HEAD at-least 4' 'read-order - HEAD at-least 4 claude-x-1' > "$T/arms-t13.conf"
@@ -464,8 +478,9 @@ ok=1
 if [ -n "$rec13" ]; then
   [ "$(grep -cE '^\| read-order \|' "$rec13")" -eq 2 ] || ok=0
   grep -qE '^\| case \|.* model \|' "$rec13" || ok=0
-  grep -qF 'claude-stub-1' "$rec13" || ok=0
-  grep -E '^\| read-order \|' "$rec13" | grep -qF 'claude-x-1' || ok=0
+  sha7_13=$(git rev-parse --short=7 HEAD)
+  grep -qF "| read-order | candidate | $sha7_13 | claude-stub-1 |" "$rec13" || ok=0
+  grep -qF "| read-order | candidate | $sha7_13 | claude-x-1 |" "$rec13" || ok=0
 fi
 [ "$ok" -eq 1 ] && pass "T13 two arms on one commit: two evals, two rows, a model column" || fail "T13 rc=$rc evals=$(evals): $(cat "$WARDEN_STUB_LOG") $(grep -E '^\| ' "${rec13:-/dev/null}" 2>&1) $out"
 
@@ -586,6 +601,24 @@ out=$(env -u WARDEN_BEHAVIOR_RECORD_DIR PATH=$GOODPATH WARDEN_LESSON_ROOT="$T/lr
 reset; C=$(mk_suite_checkout)
 out=$(srun "$C" --yes --case read-order); rc=$?
 [ "$(evals)" -eq 1 ] && pass "T10 --case read-order: one eval" || fail "T10 rc=$rc evals=$(evals): $out"
+
+# T9s. the summary models come from the traces: main arm claude-stub-1 (no key fallback), ab arm claude-x-1
+reset; C=$(mk_suite_checkout)
+out=$(srun "$C" --yes --runs 1 --ab-model claude-x-1); rc=$?
+sj9=$(ls "$T"/runs/2*.json 2>/dev/null | head -n1)
+if [ -n "$sj9" ] && python3 -I - "$sj9" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+m = {(c["case"], c["arm"]): c["model"] for c in d["cases"]}
+sys.exit(0 if d["model"] == "claude-stub-1" and m[("read-order", "main")] == "claude-stub-1" and m[("read-order", "ab")] == "claude-x-1" else 1)
+PY
+then pass "T9s summary models: main claude-stub-1, ab claude-x-1"; else fail "T9s rc=$rc: $(cat "${sj9:-/dev/null}") $out"; fi
+
+# T14. suite mode refuses --model
+reset; C=$(mk_suite_checkout)
+out=$(srun "$C" --yes --model claude-g-1); rc=$?
+[ "$rc" -eq 2 ] && [ "$(evals)" -eq 0 ] && printf '%s' "$out" | grep -qF 'suite does not take --model; use --ab-model' \
+  && pass "T14 --suite --model: exit 2, message, no eval" || fail "T14 rc=$rc: $out"
 
 # T11. --ab-model doubles the arms; the case count stays distinct case names
 reset; C=$(mk_suite_checkout)

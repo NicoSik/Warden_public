@@ -39,6 +39,7 @@ if [ "$SUITE" -eq 1 ]; then
   SUITE_CONF="$EVALS/suite.conf"
   SUMMARY_ARGS=(--summary)
   [ -n "$RECORD_DIR" ] || RECORD_DIR="${WARDEN_LESSON_ROOT:-$HOME/.claude/lessons}/suite"
+  [ -z "$MODEL" ] || { echo "suite does not take --model; use --ab-model" >&2; exit 2; }
   # Suite checks come before the preflight, in this order.
   branch=$(git -C "$REPO" symbolic-ref --short -q HEAD 2>/dev/null) || branch=HEAD
   [ "$branch" = main ] || { echo "suite runs only on main (current: $branch)" >&2; exit 2; }

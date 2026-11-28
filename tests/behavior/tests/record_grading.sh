@@ -310,6 +310,14 @@ if [ "$RC" -eq 0 ] && [ -z "$(ls "$T"/sout3/*.json 2>/dev/null)" ] && [ -n "$(ls
   pass "43 without --summary, no .json"
 else fail "43 rc=$RC: $(ls "$T/sout3" 2>&1)"; fi
 
+# 43. a two-arm run (a baseline other than "-") writes no summary, but the Markdown record stays.
+conf_line "$T/s2.conf" read-order "$BASE" "$CAND" at-least 4
+sum_record "$T/s2.conf" "$T/sout5" --summary --result "$BASE=$T/ro4v.json" --result "$CAND=$T/ro4v.json"
+if [ "$RC" -eq 0 ] && [ -z "$(ls "$T"/sout5/*.json 2>/dev/null)" ] && [ -n "$(ls "$T"/sout5/*.md 2>/dev/null)" ] \
+   && printf '%s' "$ERR" | grep -qF 'summary: skipped, two-arm run'; then
+  pass "43 two-arm run with --summary: no .json, Markdown written, notice on stderr"
+else fail "43 rc=$RC: $(ls "$T/sout5" 2>&1) $ERR"; fi
+
 # 44. a partial result (exit 2) writes no .json.
 python3 -I -c '
 import json, sys
@@ -319,6 +327,28 @@ sum_record "$T/s1.conf" "$T/sout4" --summary --result "$CAND=$T/ro4p.json"
 if [ "$RC" -eq 2 ] && [ -z "$(ls "$T"/sout4/*.json 2>/dev/null)" ]; then
   pass "44 partial result: exit 2, no .json"
 else fail "44 rc=$RC: $(ls "$T/sout4" 2>&1)"; fi
+
+# 45. <synthetic> never reaches the summary models; each model is one ID (the most common one).
+SRAW2="$T/sraw2"; rm -rf "$SRAW2"; mkdir -p "$SRAW2/traces/read-order/bbbbbbb"
+{ printf '%s\n' '{"type":"assistant","message":{"model":"claude-opus-5-5","content":[]}}'
+  printf '%s\n' '{"type":"assistant","message":{"model":"<synthetic>","content":[]}}'; } > "$SRAW2/traces/read-order/bbbbbbb/run-1.jsonl"
+SRAW_SAVE="$SRAW"; SRAW="$SRAW2"
+sum_record "$T/s1.conf" "$T/sout6" --summary --result "$CAND=$T/ro4v.json"
+SRAW="$SRAW_SAVE"
+sj6=$(ls "$T"/sout6/*.json 2>/dev/null | head -n1)
+if [ "$RC" -eq 0 ] && [ -n "$sj6" ] && python3 -I -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+sys.exit(0 if d["model"] == "claude-opus-5-5" and d["cases"][0]["model"] == "claude-opus-5-5" else 1)' "$sj6"; then
+  pass "45 summary models drop <synthetic> and name one model ID"
+else fail "45 rc=$RC: $(cat "$sj6" 2>/dev/null) $ERR"; fi
+
+# 46. a baseline and a candidate on one commit with different models: the Results table has the model column.
+printf 'read-order %s %s at-least 4 claude-x-1\n' "$CAND" "$CAND" > "$T/s3.conf"
+run_record "$REC" "$T/s3.conf" "$CAND=$T/ro4.json" "$CAND@claude-x-1=$T/ro4.json"
+if [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -qxF '| case | arm | SHA | model | count/runs | criterion | result |'; then
+  pass "46 baseline and candidate on one commit, two models: model column"
+else fail "46 rc=$RC: $(printf '%s\n' "$OUT" | grep '^| case' | head -n2) $ERR"; fi
 
 [ ! -d "$HERE/../lib/__pycache__" ] || fail "record.py left a __pycache__ beside the grader"
 harness_exit
