@@ -135,7 +135,7 @@ Test the three scripts with `bash bin/tests/warden-statusline.test.sh`,
 - `warden-lesson suite [--case NAME] [--runs N] [--ab-model ID]` runs the behavior suite on `main`
   through `tests/behavior/run-behavior --suite`. It asks `Start N agents? [y/N]` first and returns the
   wrapper's exit code. After the run it prints a comparison with the newest earlier record that has
-  different CLI version or model pins. A case that passed before and fails now shows `FLIPPED`.
+  different CLI version or model pins. A case whose result changed between `PASS` and `FAIL`, in either direction, shows `FLIPPED`.
 - `warden-lesson status` shows the suite coverage lines for the current CLI version and model.
 
 ## Tools this setup draws on

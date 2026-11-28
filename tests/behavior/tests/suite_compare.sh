@@ -115,6 +115,26 @@ if has "A/B: claude-sonnet-5-5 against $M" && printf '%s\n' "$OUT" | sed -n '/^A
   pass "T23 A/B block with FLIPPED"
 else fail "T23 $OUT $ERR"; fi
 
+# G2a: FAIL to PASS is FLIPPED too, in the main block and in the A/B block
+F="$T/g2a"; mk "$F" aaaaaa $D1 $C1 2.1.1 $M "[$(ent read-order main $M 1 0 FAIL)]"
+mk "$F" bbbbbb $D2 $C2 2.1.2 $M "[$(ent read-order main $M 5 0 PASS)]"
+cmp "$F" bbbbbb
+if printf '%s\n' "$OUT" | grep 'read-order' | grep -qF FLIPPED; then pass "G2a FAIL to PASS is FLIPPED"
+else fail "G2a $OUT $ERR"; fi
+F="$T/g2b"; mk "$F" aaaaaa $D1 $C1 2.1.1 $M "[$(ent read-order main $M 1 0 FAIL),$(ent read-order ab claude-sonnet-5-5 5 0 PASS)]"
+cmp "$F" aaaaaa
+if printf '%s\n' "$OUT" | sed -n '/^A\/B:/,$p' | grep -qF FLIPPED; then pass "G2b A/B main FAIL, ab PASS is FLIPPED"
+else fail "G2b $OUT $ERR"; fi
+
+# G2c: labels name the correct side
+F="$T/g2c"; mk "$F" aaaaaa $D1 $C1 2.1.1 $M "[$(ent only-old main $M 5 0 PASS),$(ent both main $M 5 0 PASS)]"
+mk "$F" bbbbbb $D2 $C2 2.1.2 $M "[$(ent only-new main $M 5 0 PASS),$(ent both main $M 5 0 PASS)]"
+cmp "$F" bbbbbb
+if printf '%s\n' "$OUT" | grep '^only-new' | grep -qF "new case" \
+   && printf '%s\n' "$OUT" | grep '^only-old' | grep -qF "not in new record" \
+   && ! has "not in old record"; then pass "G2c new case / not in new record on the right sides"
+else fail "G2c $OUT $ERR"; fi
+
 # usage
 python3 -I "$CMP" --folder "$T/t15" --repo "$R" >/dev/null 2>&1; rc=$?
 python3 -I "$CMP" --folder "$T/t15" --new nosuch --repo "$R" >/dev/null 2>&1; rc2=$?

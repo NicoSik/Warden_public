@@ -51,12 +51,12 @@ def rows(old_view, new_view, old_label="old", new_label="new"):
         if o is None:
             line += " | new case"
         elif n is None:
-            line += " | not in old record"
+            line += " | not in new record"
         elif "ERRORED" in (o["result"], n["result"]):
             bad = n if n["result"] == "ERRORED" else o
             line += " | not comparable (%s errored)" % bad["errored"]
             line += " | rerun: warden-lesson suite --case %s" % case
-        elif o["result"] == "PASS" and n["result"] == "FAIL":
+        elif {o["result"], n["result"]} == {"PASS", "FAIL"}:
             line += " | FLIPPED"
         out.append(line)
     return out
