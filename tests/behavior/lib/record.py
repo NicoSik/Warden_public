@@ -385,6 +385,8 @@ def main():
             f.write(text)
         if a.summary and any(r[1] != "-" for r in conf):
             print("summary: skipped, two-arm run", file=sys.stderr)
+        elif a.summary and a.merge_check_stub:
+            print("summary: skipped, merge check stub", file=sys.stderr)
         elif a.summary:
             raw_ver = sorted(v for v in versions if v)
             raw_ver = raw_ver[0] if raw_ver else ""

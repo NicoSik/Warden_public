@@ -461,10 +461,12 @@ def weekly_cmd(args):
         os.environ.get("WARDEN_PROJECTS_DIR") or os.path.join(home_dir, ".claude", "projects"),
         os.environ.get("WARDEN_SETTINGS") or os.path.join(home_dir, ".claude", "settings.json"), since)
     version_lines, errors = _version_lines(pins)
-    if pins["cli_error"]:
+    if pins["cli_error"] and pins["cli_error"] != "claude not found at schedule install":
         errors.append(pins["cli_error"])
-    old_text = _pins_text(previous) if previous and "model" in previous else "unknown unknown"
-    if old_text == _pins_text(pins):
+    old_text = _pins_text(previous) if previous and "model" in previous else None
+    if old_text is None:
+        text += "\npins: %s (%s), first weekly run" % (_pins_text(pins), pins["model_source"])
+    elif old_text == _pins_text(pins):
         text += "\npins: %s (%s), unchanged since the last weekly run" % (_pins_text(pins), pins["model_source"])
     else:
         text += "\npins: %s (%s), changed since the last weekly run (%s \u2192 %s)" % (

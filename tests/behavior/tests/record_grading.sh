@@ -318,6 +318,12 @@ if [ "$RC" -eq 0 ] && [ -z "$(ls "$T"/sout5/*.json 2>/dev/null)" ] && [ -n "$(ls
   pass "43 two-arm run with --summary: no .json, Markdown written, notice on stderr"
 else fail "43 rc=$RC: $(ls "$T/sout5" 2>&1) $ERR"; fi
 
+# T55 (D3, REQ-6.8). a merge-check stub run writes no summary.
+sum_record "$T/s1.conf" "$T/sout7" --summary --merge-check-stub --result "$CAND=$T/ro4v.json"
+if [ -z "$(ls "$T"/sout7/*.json 2>/dev/null)" ] && [ -n "$(ls "$T"/sout7/*.md 2>/dev/null)" ] && printf '%s' "$ERR" | grep -qF 'summary: skipped, merge check stub'; then
+  pass "T55 merge-check stub run: no .json, notice on stderr"
+else fail "T55 rc=$RC: $(ls "$T/sout7" 2>&1) $ERR"; fi
+
 # 44. a partial result (exit 2) writes no .json.
 python3 -I -c '
 import json, sys

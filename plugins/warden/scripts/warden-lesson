@@ -1143,7 +1143,7 @@ def _suite(args):
     cmd = ["bash", wrapper, "--suite"]
     if args.case:
         cmd += ["--case", args.case]
-    if args.runs:
+    if args.runs is not None:
         cmd += ["--runs", str(args.runs)]
     if args.ab_model:
         cmd += ["--ab-model", args.ab_model]

@@ -542,7 +542,7 @@ if [ "$(oslines)" = 1 ] && osall | grep -q 'Claude Code 2.1 → 2.2. Run: warden
 vroot; tx claude-opus-5-5; summ a1 2026-11-20 2.1.331 claude-opus-5-5 alpha=PASS,beta=PASS
 WARDEN_STUB_CLAUDE_OUT='2.1.340 (Claude Code)' WL weekly >/dev/null
 [ "$(oslines)" = 0 ] && pass "T35 a patch change is quiet" || fail "T35: $(cat "$WARDEN_STUB_LOG")"
-tail -1 "$ROOT/weekly/report-2026-11-30.txt" | grep -q '^pins: 2.1.340 claude-opus-5-5 (logs), changed since the last weekly run (unknown unknown → 2.1.340 claude-opus-5-5)$' && pass "the report ends with the pins line" || fail "pins line: $(tail -1 "$ROOT/weekly/report-2026-11-30.txt")"
+tail -1 "$ROOT/weekly/report-2026-11-30.txt" | grep -q '^pins: 2.1.340 claude-opus-5-5 (logs), first weekly run$' && pass "T56 (D4) the first report ends with the first-run pins line" || fail "pins line: $(tail -1 "$ROOT/weekly/report-2026-11-30.txt")"
 echo '{"model":"claude-opus-5-5"}' > "$HARNESS_TMP/settings.json"
 WARDEN_NOW=2026-12-07T09:15:00 WARDEN_STUB_CLAUDE_OUT='2.1.340 (Claude Code)' WL weekly >/dev/null
 tail -1 "$ROOT/weekly/report-2026-12-07.txt" | grep -q '^pins: 2.1.340 claude-opus-5-5 (settings), unchanged since the last weekly run$' && pass "an unchanged pins line follows" || fail "pins line 2: $(tail -1 "$ROOT/weekly/report-2026-12-07.txt")"
@@ -561,6 +561,11 @@ WL weekly >/dev/null
 vroot; tx claude-opus-5-5
 WARDEN_STUB_CLAUDE_EXIT=1 WL weekly >/dev/null
 if lastrun_has x 'assert "claude --version failed" in d["cli_error"] and "claude --version failed" in d["error"] and d["model"]=="claude-opus-5-5"'; then pass "T38 a failing claude is recorded"; else fail "T38: $(cat "$ROOT/weekly/last-run")"; fi
+
+# T54 (D2). No stored claude: the CLI check is off, recorded in cli_error, and not an error.
+vroot; tx claude-opus-5-5; summ a1 2026-11-20 2.1.331 claude-opus-5-5 alpha=PASS,beta=PASS
+(unset WARDEN_CLAUDE; WL weekly >/dev/null 2>&1); RC=$?
+if [ "$RC" -eq 0 ] && lastrun_has x 'assert d["cli_error"]=="claude not found at schedule install" and "error" not in d'; then pass "T54 a missing claude path is not an error"; else fail "T54: rc $RC $(cat "$ROOT/weekly/last-run")"; fi
 
 # T39. A recurring entry and a model change give one call with both texts.
 vroot; tx claude-opus-6-0; summ a1 2026-11-20 2.1.331 claude-opus-5-5 alpha=PASS,beta=PASS

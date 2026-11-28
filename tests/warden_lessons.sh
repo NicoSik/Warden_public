@@ -797,5 +797,8 @@ chmod 755 "$FAKE/tests/behavior/run-behavior"
 echo hello | python3 -I "$FSCRIPT" suite --case read-order --runs 1; SRC=$?
 [ "$(cat "$FAKE/args.log")" = "--suite --case read-order --runs 1" ] && [ "$SRC" = 1 ] && [ "$(cat "$FAKE/stdin.log")" = hello ] \
   && pass "suite runs the wrapper with the flags, passes stdin and the exit code" || fail "suite pass-through: rc=$SRC args=$(cat "$FAKE/args.log" 2>&1)"
+# T53 (D1). --runs 0 reaches the wrapper, which refuses it; it is not read as "unset".
+python3 -I "$FSCRIPT" suite --runs 0 </dev/null >/dev/null 2>&1
+[ "$(cat "$FAKE/args.log")" = "--suite --runs 0" ] && pass "T53 suite passes --runs 0 to the wrapper" || fail "T53 args=$(cat "$FAKE/args.log" 2>&1)"
 
 harness_exit
