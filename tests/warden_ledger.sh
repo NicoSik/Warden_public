@@ -2,6 +2,13 @@
 # REQ-1, REQ-7, REQ-8. The ledger store, the lazy loader and warden-lesson mark.
 . "$(dirname "$0")/lib/harness.sh"
 harness_setup
+# Version check seams: a stub claude, an empty projects tree, no settings and a two-case suite.conf.
+mkdir -p "$HARNESS_TMP/vbin" "$HARNESS_TMP/proj"
+printf '#!/bin/bash\necho "${WARDEN_STUB_CLAUDE_OUT:-2.1.331 (Claude Code)}"\nexit "${WARDEN_STUB_CLAUDE_EXIT:-0}"\n' > "$HARNESS_TMP/vbin/claude"
+chmod +x "$HARNESS_TMP/vbin/claude"
+export WARDEN_CLAUDE="$HARNESS_TMP/vbin/claude" WARDEN_PROJECTS_DIR="$HARNESS_TMP/proj" WARDEN_SETTINGS="$HARNESS_TMP/settings.json"
+printf '# suite\nalpha at-least 4\n\nbeta at-least 4\n' > "$HARNESS_TMP/suite.conf"
+export WARDEN_SUITE_CONF="$HARNESS_TMP/suite.conf"
 
 SCRIPT="${WARDEN_LESSON_SCRIPT:-$REPO_DIR/plugins/warden/scripts/warden-lesson}"
 
@@ -277,7 +284,7 @@ clearlog
 WL weekly; RC=$?
 if [ $RC -eq 0 ] && [ -f "$ROOT/weekly/report-2026-11-30.txt" ] && lastrun_has x 'assert d["notified"] is False and d["recurring"]==0 and d["unacknowledged"]==0 and "error" not in d' && [ "$(oslines)" = 0 ]; then pass "weekly with nothing to report writes files and stays quiet"; else fail "T17: rc $RC"; fi
 [ "$(mode_of "$ROOT/weekly")" = 700 ] && pass "weekly folder has mode 700" || fail "weekly mode $(mode_of "$ROOT/weekly")"
-[ "$(cat "$ROOT/weekly/report-2026-11-30.txt")" = "$(WL report)" ] && pass "the weekly file holds the report text" || fail "weekly file differs from report"
+[ "$(sed '$d' "$ROOT/weekly/report-2026-11-30.txt")" = "$(WL report)" ] && pass "the weekly file holds the report text" || fail "weekly file differs from report"
 
 # T18. A recurring fixed entry notifies once, with counts and the path only.
 sroot
@@ -372,7 +379,8 @@ schedsetup() {
   rm -rf "$HARNESS_TMP/co" "$HARNESS_TMP/agents"
   mkdir -p "$HARNESS_TMP/co/.git" "$HARNESS_TMP/co/bin" "$HARNESS_TMP/co/plugins/warden/scripts" "$HOME/.claude"
   CO="$(cd -P "$HARNESS_TMP/co" && pwd)"
-  cp "$REPO_DIR/plugins/warden/scripts/warden-lesson" "$REPO_DIR/plugins/warden/scripts/warden_ledger.py" "$CO/plugins/warden/scripts/"
+  cp "$REPO_DIR/plugins/warden/scripts/warden-lesson" "$REPO_DIR/plugins/warden/scripts/warden_ledger.py" \
+    "$REPO_DIR/plugins/warden/scripts/warden_suite.py" "$REPO_DIR/plugins/warden/scripts/warden_pins.py" "$CO/plugins/warden/scripts/"
   rm -f "$HOME/.claude/bin"; ln -s "$CO/bin" "$HOME/.claude/bin"
   CSCRIPT="$CO/plugins/warden/scripts/warden-lesson"
   PLIST="$HARNESS_TMP/agents/com.warden.lesson-weekly.plist"
@@ -426,6 +434,12 @@ rm -f "$ROOT"/weekly/report-*.txt "$ROOT/weekly/last-run"; clearlog
 : > "$ROOT/weekly/test-notify"
 WL weekly >/dev/null; RC=$?
 if [ $RC -eq 0 ] && [ "$(oslines)" = 1 ] && grep -q 'Test notification' "$WARDEN_STUB_LOG" && ! ls "$ROOT"/weekly/report-*.txt >/dev/null 2>&1 && [ ! -e "$ROOT/weekly/last-run" ] && [ ! -e "$ROOT/weekly/test-notify" ]; then pass "a fresh marker sends the test notification only"; else fail "T22c fresh: rc $RC $(ls "$ROOT/weekly")"; fi
+# The test-notify path never reads the pins: a claude stub that leaves a trace is not run.
+: > "$ROOT/weekly/test-notify"
+printf '#!/bin/bash\n: > "%s/claude-ran"\necho 2.1.331\n' "$HARNESS_TMP" > "$HARNESS_TMP/vbin/claude-trace"; chmod +x "$HARNESS_TMP/vbin/claude-trace"
+rm -f "$HARNESS_TMP/claude-ran"
+WARDEN_CLAUDE="$HARNESS_TMP/vbin/claude-trace" WL weekly >/dev/null
+[ ! -e "$HARNESS_TMP/claude-ran" ] && pass "the test-notify path does not read the pins" || fail "test-notify path ran claude"
 
 # T23. Refusals.
 schedsetup
@@ -466,6 +480,151 @@ case "$(WL status | grep '^schedule:')" in "schedule: broken (script missing: $C
 mv "$CSCRIPT.off" "$CSCRIPT"
 python3 -I -c 'import plistlib,sys; p=sys.argv[1]; d=plistlib.load(open(p,"rb")); d["ProgramArguments"][0]="/nonexistent/python3"; plistlib.dump(d,open(p,"wb"))' "$PLIST"
 case "$(CWL status | grep '^schedule:')" in "schedule: broken (interpreter missing: /nonexistent/python3)") pass "status reports a missing interpreter";; *) fail "T26 interp: $(CWL status | grep '^schedule:')";; esac
+
+# ---- Task 6: the version check, the status lines and the claude path ----
+vroot() { sroot; rm -rf "$HARNESS_TMP/proj"; mkdir -p "$HARNESS_TMP/proj/p1"; rm -f "$HARNESS_TMP/settings.json"; unset WARDEN_STUB_CLAUDE_OUT WARDEN_STUB_CLAUDE_EXIT; clearlog; }
+# tx MODEL [TEXT] [TS]: one transcript with three assistant lines.
+tx() {
+  python3 -I - "$HARNESS_TMP/proj/p1/s-${3:-a}.jsonl" "$1" "${2:-hello}" "${3:-2026-11-29T10:00:00Z}" <<'PY'
+import json, sys
+path, model, text, ts = sys.argv[1:5]
+with open(path, "w") as f:
+    for i in range(3):
+        f.write(json.dumps({"type": "assistant", "timestamp": ts, "message": {"model": model, "content": [{"type": "text", "text": text}]}}) + "\n")
+PY
+}
+# summ ID DATE CLI MODEL CASE=RESULT,...: a summary file in the suite folder.
+summ() {
+  mkdir -p "$ROOT/suite"
+  python3 -I - "$ROOT/suite" "$@" <<'PY'
+import json, sys
+folder, sid, date, cli, model, spec = sys.argv[1:7]
+cases = []
+for part in spec.split(","):
+    name, result = part.split("=")
+    cases.append({"case": name, "arm": "main", "model": model, "count": 5, "errored": 1 if result == "ERRORED" else 0,
+                  "runs": 5, "rule": "at-least", "threshold": 4, "result": result})
+d = {"schema": 1, "id": sid, "date": date + "T10:00:00Z", "sha": "a" * 40, "cli_version": cli, "model": model,
+     "fixture_hash": "b" * 40, "runs": 5, "cases": cases}
+json.dump(d, open("%s/%s-%s.json" % (folder, date, sid), "w"))
+PY
+}
+osall() { grep -A6 '^osascript' "$WARDEN_STUB_LOG"; }
+
+# T30. No transcript text lands under the inbox.
+vroot; tx claude-opus-5-5 SECRET-PROMPT
+WL weekly >/dev/null
+if ! grep -rq SECRET-PROMPT "$ROOT"; then pass "T30 no transcript text reaches the inbox"; else fail "T30: $(grep -rl SECRET-PROMPT "$ROOT")"; fi
+
+# T31. An empty suite folder gives one notification.
+vroot; tx claude-opus-5-5
+WL weekly >/dev/null
+if [ "$(oslines)" = 1 ] && osall | grep -q 'No complete suite record yet. Run: warden-lesson suite'; then pass "T31 no suite record notifies once"; else fail "T31: $(cat "$WARDEN_STUB_LOG")"; fi
+
+# T32. A model change.
+vroot; tx claude-opus-6-0; summ a1 2026-11-20 2.1.331 claude-opus-5-5 alpha=PASS,beta=PASS
+WL weekly >/dev/null
+if [ "$(oslines)" = 1 ] && osall | grep -q 'Model changed: claude-opus-5-5 → claude-opus-6-0. Run: warden-lesson suite' && ! osall | grep -q 'Claude Code'; then pass "T32 model change notifies"; else fail "T32: $(cat "$WARDEN_STUB_LOG")"; fi
+
+# T33. A second run a week later, nothing changed, notifies again.
+vroot; tx claude-opus-5-5
+WL weekly >/dev/null
+echo '{"model":"claude-opus-5-5"}' > "$HARNESS_TMP/settings.json"
+WARDEN_NOW=2026-12-07T09:15:00 WL weekly >/dev/null
+[ "$(oslines)" = 2 ] && pass "T33 an unchanged week notifies again" || fail "T33: $(oslines)"
+
+# T34. A CLI minor change.
+vroot; tx claude-opus-5-5; summ a1 2026-11-20 2.1.331 claude-opus-5-5 alpha=PASS,beta=PASS
+WARDEN_STUB_CLAUDE_OUT='2.2.0 (Claude Code)' WL weekly >/dev/null
+if [ "$(oslines)" = 1 ] && osall | grep -q 'Claude Code 2.1 → 2.2. Run: warden-lesson suite' && ! osall | grep -q 'Model changed'; then pass "T34 CLI minor change notifies"; else fail "T34: $(cat "$WARDEN_STUB_LOG")"; fi
+
+# T35. A patch change is quiet.
+vroot; tx claude-opus-5-5; summ a1 2026-11-20 2.1.331 claude-opus-5-5 alpha=PASS,beta=PASS
+WARDEN_STUB_CLAUDE_OUT='2.1.340 (Claude Code)' WL weekly >/dev/null
+[ "$(oslines)" = 0 ] && pass "T35 a patch change is quiet" || fail "T35: $(cat "$WARDEN_STUB_LOG")"
+tail -1 "$ROOT/weekly/report-2026-11-30.txt" | grep -q '^pins: 2.1.340 claude-opus-5-5 (logs), first weekly run$' && pass "T56 (D4) the first report ends with the first-run pins line" || fail "pins line: $(tail -1 "$ROOT/weekly/report-2026-11-30.txt")"
+echo '{"model":"claude-opus-5-5"}' > "$HARNESS_TMP/settings.json"
+WARDEN_NOW=2026-12-07T09:15:00 WARDEN_STUB_CLAUDE_OUT='2.1.340 (Claude Code)' WL weekly >/dev/null
+tail -1 "$ROOT/weekly/report-2026-12-07.txt" | grep -q '^pins: 2.1.340 claude-opus-5-5 (settings), unchanged since the last weekly run$' && pass "an unchanged pins line follows" || fail "pins line 2: $(tail -1 "$ROOT/weekly/report-2026-12-07.txt")"
+
+# T36. A single-case summary on the new pins alone still notifies.
+vroot; tx claude-opus-6-0; summ a1 2026-11-20 2.1.331 claude-opus-5-5 alpha=PASS,beta=PASS; summ a2 2026-11-25 2.1.331 claude-opus-6-0 alpha=PASS
+WL weekly >/dev/null
+if [ "$(oslines)" = 1 ] && osall | grep -q 'Model changed: claude-opus-5-5 → claude-opus-6-0'; then pass "T36 a partial summary still notifies"; else fail "T36: $(cat "$WARDEN_STUB_LOG")"; fi
+
+# T37. A full run with one ERRORED case plus a rerun of that case is covered.
+vroot; tx claude-opus-6-0; summ a1 2026-11-20 2.1.331 claude-opus-6-0 alpha=PASS,beta=ERRORED; summ a2 2026-11-25 2.1.331 claude-opus-6-0 beta=PASS
+WL weekly >/dev/null
+[ "$(oslines)" = 0 ] && pass "T37 a rerun completes the coverage" || fail "T37: $(cat "$WARDEN_STUB_LOG")"
+
+# T38. A failing claude records the error; the model is still set.
+vroot; tx claude-opus-5-5
+WARDEN_STUB_CLAUDE_EXIT=1 WL weekly >/dev/null
+if lastrun_has x 'assert "claude --version failed" in d["cli_error"] and "claude --version failed" in d["error"] and d["model"]=="claude-opus-5-5"'; then pass "T38 a failing claude is recorded"; else fail "T38: $(cat "$ROOT/weekly/last-run")"; fi
+
+# T54 (D2). No stored claude: the CLI check is off, recorded in cli_error, and not an error.
+vroot; tx claude-opus-5-5; summ a1 2026-11-20 2.1.331 claude-opus-5-5 alpha=PASS,beta=PASS
+(unset WARDEN_CLAUDE; WL weekly >/dev/null 2>&1); RC=$?
+if [ "$RC" -eq 0 ] && lastrun_has x 'assert d["cli_error"]=="claude not found at schedule install" and "error" not in d'; then pass "T54 a missing claude path is not an error"; else fail "T54: rc $RC $(cat "$ROOT/weekly/last-run")"; fi
+
+# T39. A recurring entry and a model change give one call with both texts.
+vroot; tx claude-opus-6-0; summ a1 2026-11-20 2.1.331 claude-opus-5-5 alpha=PASS,beta=PASS
+for i in 1 2 3; do sfail "s$i" "2026-11-1${i}T10:00:00Z" make "(eval):$i: ==== not found"; done
+WL mark w fixed --fixed-on 2026-11-05 --match '^\(eval\):N: \S+ not found$' >/dev/null
+clearlog
+WL weekly >/dev/null
+if [ "$(oslines)" = 1 ] && osall | grep -q 'recurring' && osall | grep -q 'Model changed'; then pass "T39 one notification holds both texts"; else fail "T39: $(cat "$WARDEN_STUB_LOG")"; fi
+
+# T40. No ledger hits and covered pins give no notification.
+vroot; tx claude-opus-5-5; summ a1 2026-11-20 2.1.331 claude-opus-5-5 alpha=PASS,beta=PASS
+WL weekly >/dev/null
+[ "$(oslines)" = 0 ] && pass "T40 covered pins stay quiet" || fail "T40: $(cat "$WARDEN_STUB_LOG")"
+
+# T45. last-run holds the pins.
+vroot; tx claude-opus-5-5
+WL weekly >/dev/null
+if lastrun_has x 'assert d["cli_version"]=="2.1.331" and d["model"]=="claude-opus-5-5" and d["model_source"]=="logs" and d["model_lines"]==3 and "cli_error" not in d'; then pass "T45 last-run holds the pins"; else fail "T45: $(cat "$ROOT/weekly/last-run")"; fi
+
+# T51. A failing claude and a covered model give no version line.
+vroot; tx claude-opus-5-5; summ a1 2026-11-20 2.1.331 claude-opus-5-5 alpha=PASS,beta=PASS
+WARDEN_STUB_CLAUDE_EXIT=1 WL weekly >/dev/null
+[ "$(oslines)" = 0 ] && pass "T51 no CLI version, covered model, quiet" || fail "T51: $(cat "$WARDEN_STUB_LOG")"
+
+# T52. A newer ERRORED summary on the new model; the old covered group names the old model.
+vroot; tx claude-opus-6-0; summ a1 2026-11-20 2.1.331 claude-opus-5-5 alpha=PASS,beta=PASS; summ a2 2026-11-25 2.1.331 claude-opus-6-0 alpha=PASS,beta=ERRORED
+WL weekly >/dev/null
+if [ "$(oslines)" = 1 ] && osall | grep -q 'Model changed: claude-opus-5-5 → claude-opus-6-0'; then pass "T52 an ERRORED newer summary does not hide the change"; else fail "T52: $(cat "$WARDEN_STUB_LOG")"; fi
+
+# T46. install stores the path as found on PATH, not its target.
+schedsetup
+LNK="$(mktemp -d "$HARNESS_TMP/lnk.XXXXXX")"; ln -s "$HARNESS_TMP/vbin/claude" "$LNK/claude"
+OUT="$(PATH="$LNK:$PATH" CWL schedule install < /dev/null 2>&1)"; RC=$?
+if [ $RC -eq 0 ] && plist_has x 'assert d["EnvironmentVariables"]=={"WARDEN_CLAUDE":"'"$LNK/claude"'"}, d'; then pass "T46 install stores the symlink path"; else fail "T46: rc $RC $OUT"; fi
+
+# T47. install without claude goes on.
+schedsetup
+NOCL="$(mktemp -d "$HARNESS_TMP/nocl.XXXXXX")"
+for t in python3 launchctl osascript curl env bash; do ln -s "$(command -v $t)" "$NOCL/$t"; done
+OUT="$(PATH="$NOCL" CWL schedule install < /dev/null 2>&1)"; RC=$?
+if [ $RC -eq 0 ] && [ -f "$PLIST" ] && case "$OUT" in *"claude not found; the version check is off"*) true;; *) false;; esac && plist_has x 'assert "EnvironmentVariables" not in d'; then pass "T47 install without claude exits 0 and says so"; else fail "T47: rc $RC $OUT"; fi
+
+# T50. A plist without WARDEN_CLAUDE gives the warning line (the plist from T47 has none).
+L="$(CWL status | sed -n 8p)"
+[ "$L" = "version check: claude not found at schedule install" ] && pass "T50 status warns about a missing claude path" || fail "T50: $(CWL status)"
+
+# T48. The suite line.
+vroot; tx claude-opus-5-5; summ a1 2026-11-20 2.1.331 claude-opus-5-5 alpha=PASS,beta=PASS
+WL weekly >/dev/null
+L="$(WL status | grep '^suite:')"
+[ "$L" = "suite: last run 2026-11-20 on 2.1.331, claude-opus-5-5. Now 2.1.331, claude-opus-5-5 (logs)" ] && pass "T48 the suite line" || fail "T48: '$L'"
+rm -f "$ROOT/weekly/last-run"
+L="$(WL status | grep '^suite:')"
+[ "$L" = "suite: last run 2026-11-20 on 2.1.331, claude-opus-5-5. Now unknown" ] && pass "the suite line without pins reads Now unknown" || fail "T48b: '$L'"
+
+# T49. No summary.
+vroot
+L="$(WL status | grep '^suite:')"
+[ "$L" = "suite: never run" ] && pass "T49 suite: never run" || fail "T49: '$L'"
 
 harness_teardown
 exit $((FAILURES > 0))

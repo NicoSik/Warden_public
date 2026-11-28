@@ -328,6 +328,68 @@ def now():
     return datetime.datetime.fromisoformat(text) if text else datetime.datetime.now()
 
 
+def _module(name):
+    """Load a sibling module by path, once. The weekly run runs under python3 -I, so the folder is not on sys.path."""
+    mod = sys.modules.get(name)
+    if mod is None:
+        import importlib.util
+        path = os.path.join(os.path.dirname(os.path.realpath(__file__)), name + ".py")
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+    return mod
+
+
+def _suite_conf():
+    given = os.environ.get("WARDEN_SUITE_CONF")
+    if given:
+        return given
+    checkout = os.path.realpath(__file__)
+    for _ in range(4):
+        checkout = os.path.dirname(checkout)
+    return os.path.join(checkout, "tests", "behavior", "evals", "suite.conf")
+
+
+def _read_last_run():
+    try:
+        with open(os.path.join(weekly_dir(), "last-run"), encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _version_lines(pins):
+    """Return (lines, errors) for the suite coverage of the current pins."""
+    model = pins["model"]
+    if model == "unknown":
+        return [], []
+    suite = _module("warden_suite")
+    try:
+        cases = suite.read_suite_cases(_suite_conf())
+    except OSError as e:
+        return [], ["suite.conf unreadable: %s" % (e.strerror or e)]
+    summaries, _bad = suite.load_summaries(os.path.join(WL.inbox(), "suite"))
+    cli_minor = None if pins["cli_error"] else suite.minor(pins["cli_version"])
+    if suite.is_covered(summaries, cases, model, cli_minor):
+        return [], []
+    found = suite.newest_covered(summaries, cases)
+    if found is None:
+        return ["No complete suite record yet. Run: warden-lesson suite"], []
+    old_minor, old_model = found[0]
+    lines = []
+    if old_model != model:
+        lines.append("Model changed: %s \u2192 %s. Run: warden-lesson suite" % (old_model, model))
+    if cli_minor is not None and old_minor != cli_minor:
+        lines.append("Claude Code %s \u2192 %s. Run: warden-lesson suite" % (old_minor, cli_minor))
+    return lines, []
+
+
+def _pins_text(pins):
+    return "%s %s" % (pins.get("cli_version") or "unknown", pins.get("model") or "unknown")
+
+
 def weekly_dir():
     return os.path.join(WL.inbox(), "weekly")
 
@@ -388,9 +450,29 @@ def weekly_cmd(args):
     view = ledger_view(False)
     text = render_report(view)
     when = now()
+    previous = _read_last_run()
+    try:
+        since = datetime.datetime.fromisoformat(previous["ts"]).astimezone()
+    except (TypeError, KeyError, ValueError):
+        since = (when - datetime.timedelta(days=7)).astimezone()
+    home_dir = os.path.expanduser("~")
+    pins = _module("warden_pins").current_pins(
+        os.environ.get("WARDEN_CLAUDE"),
+        os.environ.get("WARDEN_PROJECTS_DIR") or os.path.join(home_dir, ".claude", "projects"),
+        os.environ.get("WARDEN_SETTINGS") or os.path.join(home_dir, ".claude", "settings.json"), since)
+    version_lines, errors = _version_lines(pins)
+    if pins["cli_error"] and pins["cli_error"] != "claude not found at schedule install":
+        errors.append(pins["cli_error"])
+    old_text = _pins_text(previous) if previous and "model" in previous else None
+    if old_text is None:
+        text += "\npins: %s (%s), first weekly run" % (_pins_text(pins), pins["model_source"])
+    elif old_text == _pins_text(pins):
+        text += "\npins: %s (%s), unchanged since the last weekly run" % (_pins_text(pins), pins["model_source"])
+    else:
+        text += "\npins: %s (%s), changed since the last weekly run (%s \u2192 %s)" % (
+            _pins_text(pins), pins["model_source"], old_text, _pins_text(pins))
     folder = weekly_dir()
     report = os.path.join(folder, "report-%s.txt" % when.date())
-    errors = []
     try:
         os.makedirs(folder, mode=0o700, exist_ok=True)
         _write_atomic(report, text + "\n")
@@ -398,11 +480,14 @@ def weekly_cmd(args):
         errors.append("report write failed: %s" % (e.strerror or e))
     recurring, unack = len(view["recurring"]), view["unacknowledged"]
     notified = False
-    if recurring + unack > 0:
-        home = os.path.expanduser("~")
+    if recurring + unack > 0 or version_lines:
+        home = home_dir
         shown = "~" + report[len(home):] if report.startswith(home.rstrip("/") + "/") else report
-        message = "%s recurring, %s without an entry.\n%s" % (
-            _plural(recurring, "fixed entry", "fixed entries"), _plural(unack, "flagged signature", "flagged signatures"), shown)
+        parts = []
+        if recurring + unack > 0:
+            parts.append("%s recurring, %s without an entry." % (
+                _plural(recurring, "fixed entry", "fixed entries"), _plural(unack, "flagged signature", "flagged signatures")))
+        message = "\n".join(parts + version_lines + [shown])
         code = notify(message)
         notified = code == 0
         if not notified:
@@ -414,7 +499,10 @@ def weekly_cmd(args):
     except OSError:
         pass
     last = {"ts": when.isoformat(timespec="seconds"), "report": report, "recurring": recurring,
-            "unacknowledged": unack, "notified": notified}
+            "unacknowledged": unack, "notified": notified, "cli_version": pins["cli_version"],
+            "model": pins["model"], "model_source": pins["model_source"], "model_lines": pins["model_lines"]}
+    if pins["cli_error"]:
+        last["cli_error"] = pins["cli_error"]
     if errors:
         last["error"] = "; ".join(errors)
     try:
@@ -498,6 +586,11 @@ def _install():
     data = dict(PLIST_TEMPLATE)
     data["ProgramArguments"] = [python, "-I", script, "weekly"]
     data["StandardErrorPath"] = os.path.join(folder, "launchd.err")
+    claude = shutil.which("claude")
+    if claude is None:
+        print("claude not found; the version check is off")
+    else:
+        data["EnvironmentVariables"] = {"WARDEN_CLAUDE": claude}
     plist = plist_path()
     try:
         os.makedirs(os.path.dirname(plist), exist_ok=True)
@@ -619,5 +712,33 @@ def _schedule_line():
     return "schedule: installed, Monday 09:15" + ("" if confirmed else ", notification unconfirmed")
 
 
+def _suite_line():
+    suite = _module("warden_suite")
+    summaries, _bad = suite.load_summaries(os.path.join(WL.inbox(), "suite"))
+    if not summaries:
+        return "suite: never run"
+    newest = summaries[-1]
+    line = "suite: last run %s on %s, %s. " % (str(newest["date"])[:10], newest["cli_version"], newest["model"])
+    last = _read_last_run()
+    if last and last.get("model"):
+        return line + "Now %s, %s (%s)" % (last.get("cli_version") or "unknown", last["model"], last.get("model_source", "unknown"))
+    return line + "Now unknown"
+
+
+def _claude_warning():
+    try:
+        with open(plist_path(), "rb") as f:
+            env = plistlib.load(f).get("EnvironmentVariables")
+    except (OSError, ValueError, AttributeError, plistlib.InvalidFileException):
+        return None
+    if isinstance(env, dict) and env.get("WARDEN_CLAUDE"):
+        return None
+    return "version check: claude not found at schedule install"
+
+
 def status_lines():
-    return [_weekly_line(), _schedule_line()]
+    lines = [_weekly_line(), _schedule_line(), _suite_line()]
+    warning = _claude_warning()
+    if warning:
+        lines.append(warning)
+    return lines

@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "id": "69257e",
+  "date": "2026-11-27T10:00:00Z",
+  "sha": "0123456789abcdef0123456789abcdef01234567",
+  "cli_version": "2.1.331",
+  "cli_version_raw": "2.1.331 (Claude Code)",
+  "model": "claude-opus-5-5",
+  "graphify_version": "graphify 0.9.92",
+  "fixture_hash": "89abcdef0123456789abcdef0123456789abcdef",
+  "runs": 5,
+  "cases": [
+    {"case": "read-order", "arm": "main", "model": "claude-opus-5-5", "count": 5, "errored": 0, "runs": 5, "rule": "at-least", "threshold": 4, "result": "PASS"},
+    {"case": "read-order", "arm": "ab", "model": "claude-sonnet-5-5", "count": 3, "errored": 0, "runs": 5, "rule": "at-least", "threshold": 4, "result": "FAIL"}
+  ]
+}

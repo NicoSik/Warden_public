@@ -222,5 +222,139 @@ if [ "$RC" -eq 1 ] && row_has read-order baseline "$BASE" "4/5 (1 errored)" "gra
   pass "13 both-at-least 4, baseline 4 hits + 1 errored: baseline row FAIL, exit 1"
 else fail "13 rc=$RC: $(printf '%s\n' "$OUT" | head -n 5) $ERR"; fi
 
+# 14. a five-column conf keeps today's Results header
+conf_line "$T/h.conf" read-order "$BASE" "$CAND" at-least 4
+run_record "$REC" "$T/h.conf" "$BASE=$T/ro4.json" "$CAND=$T/ro4.json"
+if printf '%s\n' "$OUT" | grep -qxF '| case | arm | SHA | count/runs | criterion | result |'; then
+  pass "14 five-column conf: Results header has no model column"
+else fail "14 header: $(printf '%s\n' "$OUT" | grep '^| case' | head -n2) $ERR"; fi
+
+# Summary tests. sum_record CONF OUTDIR [EXTRA...] -> RC, OUT, ERR; results are the ro4 template with a stub version line.
+python3 -I -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["claudeVersion"] = "2.1.305 (Claude Code)"
+json.dump(d, open(sys.argv[2], "w"))' "$T/ro4.json" "$T/ro4v.json"
+python3 -I -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["cases"][0]["arms"]["with"][4]["error"] = "stub failure"
+json.dump(d, open(sys.argv[2], "w"))' "$T/ro4v.json" "$T/ro4ve.json"
+SRAW="$T/sraw"; rm -rf "$SRAW"
+mkdir -p "$SRAW/traces/read-order/bbbbbbb" "$SRAW/traces/read-order/bbbbbbb-claude-x-1"
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-main-1","content":[]}}' > "$SRAW/traces/read-order/bbbbbbb/run-1.jsonl"
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-x-1","content":[]}}' > "$SRAW/traces/read-order/bbbbbbb-claude-x-1/run-1.jsonl"
+printf 'read-order - %s at-least 4\nread-order - %s at-least 4 claude-x-1\n' "$CAND" "$CAND" > "$T/s.conf"
+sum_record() {
+  local conf="$1" outdir="$2"; shift 2
+  rm -rf "$outdir"
+  python3 -I "$REC" --conf "$conf" --out-dir "$outdir" --runs 5 --graphify-version "graphify 0.9.92" \
+    --fixture-hash fh --id test --raw-dir "$SRAW" "$@" >"$T/stdout" 2>"$T/stderr"
+  RC=$?; OUT=$(cat "$T/stdout"); ERR=$(cat "$T/stderr")
+}
+
+# 41. --summary writes every field of the summary, with the arms of the arms file.
+sum_record "$T/s.conf" "$T/sout" --summary --result "$CAND=$T/ro4v.json" --result "$CAND@claude-x-1=$T/ro4v.json"
+sj=$(ls "$T"/sout/*.json 2>/dev/null | head -n1)
+if [ "$RC" -eq 0 ] && [ -n "$sj" ] && python3 -I - "$sj" "$CAND" <<'PY'
+import json, re, sys
+d = json.load(open(sys.argv[1]))
+ok = (d["schema"] == 1 and d["id"] == "test" and re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", d["date"])
+      and d["sha"] == sys.argv[2] and d["cli_version"] == "2.1.305" and d["cli_version_raw"] == "2.1.305 (Claude Code)"
+      and d["model"] == "claude-main-1" and d["graphify_version"] == "graphify 0.9.92" and d["fixture_hash"] == "fh"
+      and d["runs"] == 5 and len(d["cases"]) == 2)
+a, b = d["cases"]
+ok = ok and (a["case"], a["arm"], a["model"], a["count"], a["errored"], a["runs"], a["rule"], a["threshold"], a["result"]) == \
+    ("read-order", "main", "claude-main-1", 4, 0, 5, "at-least", 4, "PASS")
+ok = ok and (b["arm"], b["model"], b["result"]) == ("ab", "claude-x-1", "PASS")
+sys.exit(0 if ok else 1)
+PY
+then pass "41 --summary writes every field, cli_version 2.1.305"; else fail "41 rc=$RC json=$sj: $(cat "$sj" 2>/dev/null) $ERR"; fi
+case "$sj" in */????-??-??-test.json) ;; *) fail "41 summary name: $sj" ;; esac
+[ -f "$(ls "$T"/sout/*.md | head -n1)" ] && [ "$(basename "${sj%.json}")" = "$(basename "$(ls "$T"/sout/*.md | head -n1)" .md)" ] && pass "41 summary sits beside the Markdown record" || fail "41 name differs from the record"
+
+# 41b. the summary has the key set and the JSON types of the golden fixture.
+if python3 -I - "$sj" "$FX/suite-summary-golden.json" <<'PY'
+import json, sys
+got, want = (json.load(open(p)) for p in sys.argv[1:3])
+def types(d): return {k: type(v).__name__ for k, v in d.items() if k != "cases"}
+bad = []
+if types(got) != types(want): bad.append("top-level: %r vs %r" % (types(got), types(want)))
+if not got["cases"] or not all(isinstance(c, dict) for c in got["cases"]): bad.append("cases")
+else:
+    for c in got["cases"]:
+        for w in want["cases"]:
+            if {k: type(v).__name__ for k, v in c.items()} != {k: type(v).__name__ for k, v in w.items()}:
+                bad.append("case entry %r" % c)
+                break
+if bad: print("; ".join(bad))
+sys.exit(1 if bad else 0)
+PY
+then pass "41b summary keys and types equal the golden fixture"; else fail "41b summary differs from the golden fixture"; fi
+
+# 42. an errored run: ERRORED in the summary, FAIL in the Markdown row.
+printf 'read-order - %s at-least 4\n' "$CAND" > "$T/s1.conf"
+sum_record "$T/s1.conf" "$T/sout2" --summary --result "$CAND=$T/ro4ve.json"
+sj2=$(ls "$T"/sout2/*.json 2>/dev/null | head -n1)
+if [ "$RC" -eq 1 ] && [ -n "$sj2" ] && python3 -I -c '
+import json, sys
+c = json.load(open(sys.argv[1]))["cases"][0]
+sys.exit(0 if (c["result"], c["errored"]) == ("ERRORED", 1) else 1)' "$sj2" \
+   && row_has read-order candidate "$CAND" "4/5 (1 errored)" "graph-first >= 4" FAIL; then
+  pass "42 errored run: ERRORED in the summary, FAIL in the Markdown row"
+else fail "42 rc=$RC json=$sj2: $(cat "$sj2" 2>/dev/null) $OUT"; fi
+
+# 43. no --summary, no .json.
+sum_record "$T/s1.conf" "$T/sout3" --result "$CAND=$T/ro4v.json"
+if [ "$RC" -eq 0 ] && [ -z "$(ls "$T"/sout3/*.json 2>/dev/null)" ] && [ -n "$(ls "$T"/sout3/*.md 2>/dev/null)" ]; then
+  pass "43 without --summary, no .json"
+else fail "43 rc=$RC: $(ls "$T/sout3" 2>&1)"; fi
+
+# 43. a two-arm run (a baseline other than "-") writes no summary, but the Markdown record stays.
+conf_line "$T/s2.conf" read-order "$BASE" "$CAND" at-least 4
+sum_record "$T/s2.conf" "$T/sout5" --summary --result "$BASE=$T/ro4v.json" --result "$CAND=$T/ro4v.json"
+if [ "$RC" -eq 0 ] && [ -z "$(ls "$T"/sout5/*.json 2>/dev/null)" ] && [ -n "$(ls "$T"/sout5/*.md 2>/dev/null)" ] \
+   && printf '%s' "$ERR" | grep -qF 'summary: skipped, two-arm run'; then
+  pass "43 two-arm run with --summary: no .json, Markdown written, notice on stderr"
+else fail "43 rc=$RC: $(ls "$T/sout5" 2>&1) $ERR"; fi
+
+# T55 (D3, REQ-6.8). a merge-check stub run writes no summary.
+sum_record "$T/s1.conf" "$T/sout7" --summary --merge-check-stub --result "$CAND=$T/ro4v.json"
+if [ -z "$(ls "$T"/sout7/*.json 2>/dev/null)" ] && [ -n "$(ls "$T"/sout7/*.md 2>/dev/null)" ] && printf '%s' "$ERR" | grep -qF 'summary: skipped, merge check stub'; then
+  pass "T55 merge-check stub run: no .json, notice on stderr"
+else fail "T55 rc=$RC: $(ls "$T/sout7" 2>&1) $ERR"; fi
+
+# 44. a partial result (exit 2) writes no .json.
+python3 -I -c '
+import json, sys
+d = json.load(open(sys.argv[1])); d["partial"] = True
+json.dump(d, open(sys.argv[2], "w"))' "$T/ro4v.json" "$T/ro4p.json"
+sum_record "$T/s1.conf" "$T/sout4" --summary --result "$CAND=$T/ro4p.json"
+if [ "$RC" -eq 2 ] && [ -z "$(ls "$T"/sout4/*.json 2>/dev/null)" ]; then
+  pass "44 partial result: exit 2, no .json"
+else fail "44 rc=$RC: $(ls "$T/sout4" 2>&1)"; fi
+
+# 45. <synthetic> never reaches the summary models; each model is one ID (the most common one).
+SRAW2="$T/sraw2"; rm -rf "$SRAW2"; mkdir -p "$SRAW2/traces/read-order/bbbbbbb"
+{ printf '%s\n' '{"type":"assistant","message":{"model":"claude-opus-5-5","content":[]}}'
+  printf '%s\n' '{"type":"assistant","message":{"model":"<synthetic>","content":[]}}'; } > "$SRAW2/traces/read-order/bbbbbbb/run-1.jsonl"
+SRAW_SAVE="$SRAW"; SRAW="$SRAW2"
+sum_record "$T/s1.conf" "$T/sout6" --summary --result "$CAND=$T/ro4v.json"
+SRAW="$SRAW_SAVE"
+sj6=$(ls "$T"/sout6/*.json 2>/dev/null | head -n1)
+if [ "$RC" -eq 0 ] && [ -n "$sj6" ] && python3 -I -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+sys.exit(0 if d["model"] == "claude-opus-5-5" and d["cases"][0]["model"] == "claude-opus-5-5" else 1)' "$sj6"; then
+  pass "45 summary models drop <synthetic> and name one model ID"
+else fail "45 rc=$RC: $(cat "$sj6" 2>/dev/null) $ERR"; fi
+
+# 46. a baseline and a candidate on one commit with different models: the Results table has the model column.
+printf 'read-order %s %s at-least 4 claude-x-1\n' "$CAND" "$CAND" > "$T/s3.conf"
+run_record "$REC" "$T/s3.conf" "$CAND=$T/ro4.json" "$CAND@claude-x-1=$T/ro4.json"
+if [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -qxF '| case | arm | SHA | model | count/runs | criterion | result |'; then
+  pass "46 baseline and candidate on one commit, two models: model column"
+else fail "46 rc=$RC: $(printf '%s\n' "$OUT" | grep '^| case' | head -n2) $ERR"; fi
+
 [ ! -d "$HERE/../lib/__pycache__" ] || fail "record.py left a __pycache__ beside the grader"
 harness_exit

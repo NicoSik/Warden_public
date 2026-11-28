@@ -127,6 +127,17 @@ ln -s "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/bin/warden-usage" ~/.local/bin/warden
 Test the three scripts with `bash bin/tests/warden-statusline.test.sh`,
 `bash bin/tests/warden-session-tokens.test.sh` and `bash bin/tests/warden-usage.test.sh`.
 
+### Lessons and the behavior suite
+
+`warden-lesson` keeps the lesson inbox. Its commands are `add`, `list`, `report`, `status`, `mark`,
+`weekly`, `schedule` and `suite`.
+
+- `warden-lesson suite [--case NAME] [--runs N] [--ab-model ID]` runs the behavior suite on `main`
+  through `tests/behavior/run-behavior --suite`. It asks `Start N agents? [y/N]` first and returns the
+  wrapper's exit code. After the run it prints a comparison with the newest earlier record that has
+  different CLI version or model pins. A case whose result changed between `PASS` and `FAIL`, in either direction, shows `FLIPPED`.
+- `warden-lesson status` shows the suite coverage lines for the current CLI version and model.
+
 ## Tools this setup draws on
 
 | Tool | What it does | Installed |

@@ -443,6 +443,47 @@ done
 
 [ "$(evals)" -eq 6 ] && pass "17f six evals, copies add no calls" || fail "17f evals=$(evals), expected 6"
 
+# T12. a sixth column pins the model of the candidate arm
+reset
+printf 'setup-planning - HEAD at-least 4 claude-x-1\n' > "$T/arms-t12.conf"
+out=$(PATH=$GOODPATH bash "$RUN" --yes --runs 1 --arms "$T/arms-t12.conf" 2>&1); rc=$?
+if [ "$(evals)" -eq 1 ] && grep '^CALL eval' "$WARDEN_STUB_LOG" | grep -qF -- '--model claude-x-1'; then
+  pass "T12 sixth column: one eval with --model claude-x-1"
+else fail "T12 rc=$rc evals=$(evals): $(cat "$WARDEN_STUB_LOG") $out"; fi
+
+# T12m. a global --model reaches an arm without a sixth column; the sixth column wins over it
+reset
+printf 'setup-planning - HEAD at-least 4\n' > "$T/arms-t12m.conf"
+out=$(PATH=$GOODPATH bash "$RUN" --yes --runs 1 --model claude-g-1 --arms "$T/arms-t12m.conf" 2>&1); rc=$?
+if [ "$(evals)" -eq 1 ] && grep '^CALL eval' "$WARDEN_STUB_LOG" | grep -qF -- '--model claude-g-1'; then
+  pass "T12m global --model with a five-column row: the eval gets it"
+else fail "T12m rc=$rc: $(cat "$WARDEN_STUB_LOG") $out"; fi
+reset
+out=$(PATH=$GOODPATH bash "$RUN" --yes --runs 1 --model claude-g-1 --arms "$T/arms-t12.conf" 2>&1); rc=$?
+if [ "$(evals)" -eq 1 ] && grep '^CALL eval' "$WARDEN_STUB_LOG" | grep -qF -- '--model claude-x-1' \
+   && ! grep '^CALL eval' "$WARDEN_STUB_LOG" | grep -qF -- 'claude-g-1'; then
+  pass "T12m sixth column wins over global --model"
+else fail "T12m sixth rc=$rc: $(cat "$WARDEN_STUB_LOG") $out"; fi
+
+# T13. one commit, two arms (no model and claude-x-1): two evals, two rows, a model column
+reset
+printf '%s\n' 'read-order - HEAD at-least 4' 'read-order - HEAD at-least 4 claude-x-1' > "$T/arms-t13.conf"
+out=$(PATH=$GOODPATH bash "$RUN" --yes --runs 1 --arms "$T/arms-t13.conf" 2>&1); rc=$?
+rec13=$(ls "$T"/runs/*.md 2>/dev/null | head -n1)
+n_model=$(grep '^CALL eval' "$WARDEN_STUB_LOG" | grep -cF -- '--model claude-x-1')
+n_plain=$(grep '^CALL eval' "$WARDEN_STUB_LOG" | grep -vcF -- '--model')
+ok=1
+[ "$(evals)" -eq 2 ] && [ "$n_model" -eq 1 ] && [ "$n_plain" -eq 1 ] || ok=0
+[ -n "$rec13" ] || ok=0
+if [ -n "$rec13" ]; then
+  [ "$(grep -cE '^\| read-order \|' "$rec13")" -eq 2 ] || ok=0
+  grep -qE '^\| case \|.* model \|' "$rec13" || ok=0
+  sha7_13=$(git rev-parse --short=7 HEAD)
+  grep -qF "| read-order | candidate | $sha7_13 | claude-stub-1 |" "$rec13" || ok=0
+  grep -qF "| read-order | candidate | $sha7_13 | claude-x-1 |" "$rec13" || ok=0
+fi
+[ "$ok" -eq 1 ] && pass "T13 two arms on one commit: two evals, two rows, a model column" || fail "T13 rc=$rc evals=$(evals): $(cat "$WARDEN_STUB_LOG") $(grep -E '^\| ' "${rec13:-/dev/null}" 2>&1) $out"
+
 # 8. repo untouched, no scratch left
 STATUS_AFTER=$(git status --porcelain)
 [ "$STATUS_BEFORE" = "$STATUS_AFTER" ] && pass "8 git status unchanged" || fail "8 git status changed"
@@ -463,5 +504,138 @@ python3 -I tests/behavior/lib/record.py --conf "$T/r14/conf" --out-dir "$T/r14/o
 if [ -e tests/behavior/lib/__pycache__ ]; then
   fail "14 record.py left tests/behavior/lib/__pycache__"; rm -rf tests/behavior/lib/__pycache__
 else pass "14 no bytecode left in tests/behavior/lib"; fi
+
+# ---- Suite mode (T1-T11 of task 4). Each test builds its own temp checkout.
+SRC_ROOT=$(pwd)
+# mk_suite_checkout: copy plugins/, tests/behavior/ and .gitignore of the working tree (no __pycache__)
+# into a new temp repository on main with one commit, and print its path.
+mk_suite_checkout() {
+  local d; d=$(mktemp -d "$T/suite.XXXXXX") || return 1
+  ( cd "$SRC_ROOT" && tar --exclude __pycache__ -cf - plugins tests/behavior .gitignore ) | tar -xf - -C "$d" || return 1
+  git -C "$d" init -q -b main && git -C "$d" config user.name t && git -C "$d" config user.email t@example.com \
+    && git -C "$d" config commit.gpgsign false && git -C "$d" add -A && git -C "$d" commit -q -m init || return 1
+  printf '%s\n' "$d"
+}
+# srun CHECKOUT ARGS...: run the temp copy of the wrapper in suite mode
+srun() { local d="$1"; shift; PATH=$GOODPATH bash "$d/tests/behavior/run-behavior" --suite "$@" 2>&1; }
+
+# T1. not on main: exit 2, the message, no eval; the same without graphify on PATH
+reset; C=$(mk_suite_checkout); git -C "$C" checkout -q -b other
+out=$(srun "$C" --yes); rc=$?
+[ "$rc" -eq 2 ] && [ "$(evals)" -eq 0 ] && printf '%s' "$out" | grep -qF 'suite runs only on main (current: other)' \
+  && pass "T1 branch other: exit 2, message, no eval" || fail "T1 rc=$rc evals=$(evals): $out"
+out=$(PATH="$T/bin-nographify:$SYSPATH" WARDEN_STUB_EXPECT_CLAUDE="$T/bin-nographify/claude" bash "$C/tests/behavior/run-behavior" --suite --yes 2>&1); rc=$?
+[ "$rc" -eq 2 ] && printf '%s' "$out" | grep -qF 'suite runs only on main (current: other)' \
+  && pass "T1 without graphify: same message, exit 2 not 3" || fail "T1 no graphify rc=$rc: $out"
+
+# T2. an edit under plugins/ is dirty
+reset; C=$(mk_suite_checkout); printf 'x\n' >> "$C/plugins/superpowers/README.md"
+out=$(srun "$C" --yes); rc=$?
+[ "$rc" -eq 2 ] && [ "$(evals)" -eq 0 ] && printf '%s' "$out" | grep -qF 'suite needs a clean checkout: plugins/' \
+  && pass "T2 edit under plugins/: exit 2, clean-checkout message" || fail "T2 rc=$rc: $out"
+
+# T3. an untracked file under tests/behavior
+reset; C=$(mk_suite_checkout); : > "$C/tests/behavior/x"
+out=$(srun "$C" --yes); rc=$?
+[ "$rc" -eq 2 ] && [ "$(evals)" -eq 0 ] && printf '%s' "$out" | grep -qF 'suite needs a clean checkout: tests/behavior/x' \
+  && pass "T3 untracked tests/behavior/x: exit 2, clean-checkout message" || fail "T3 rc=$rc: $out"
+
+# T4. an untracked file at the root does not matter
+reset; C=$(mk_suite_checkout); : > "$C/notes.txt"
+out=$(srun "$C" --yes); rc=$?
+[ "$rc" -eq 0 ] && [ "$(evals)" -eq 5 ] && pass "T4 untracked notes.txt at the root: the suite runs (5 evals)" || fail "T4 rc=$rc evals=$(evals): $out"
+
+# T5. fork/main two commits ahead: warning before Start, no fetch
+reset; C=$(mk_suite_checkout)
+c1=$(git -C "$C" commit-tree 'HEAD^{tree}' -p HEAD -m a); c2=$(git -C "$C" commit-tree 'HEAD^{tree}' -p "$c1" -m b)
+git -C "$C" update-ref refs/remotes/fork/main "$c2"
+out=$(printf 'n\n' | PATH=$GOODPATH bash "$C/tests/behavior/run-behavior" --suite 2>&1); rc=$?
+w=$(printf '%s\n' "$out" | grep -nF 'warning: main is 2 commits behind fork/main (last fetch)' | head -n1 | cut -d: -f1)
+s=$(printf '%s\n' "$out" | grep -n 'Start' | head -n1 | cut -d: -f1)
+if [ -n "$w" ] && [ -n "$s" ] && [ "$w" -lt "$s" ] && [ "$(git -C "$C" rev-parse refs/remotes/fork/main)" = "$c2" ] \
+   && [ ! -e "$C/.git/FETCH_HEAD" ] && ! grep -q fetch "$WARDEN_STUB_LOG"; then
+  pass "T5 behind fork/main: warning before Start, no fetch"
+else fail "T5 w=$w s=$s: $out"; fi
+# no fork/main: no warning
+reset; C=$(mk_suite_checkout); out=$(srun "$C" --yes); printf '%s' "$out" | grep -q 'commits behind' && fail "T5 warning without fork/main" || pass "T5 no fork/main: no warning"
+
+# T6. an eval directory without a criterion
+reset; C=$(mk_suite_checkout); mkdir "$C/tests/behavior/evals/new-case"; : > "$C/tests/behavior/evals/new-case/x"
+git -C "$C" add -A && git -C "$C" commit -q -m new
+out=$(srun "$C" --yes); rc=$?
+[ "$rc" -eq 2 ] && [ "$(evals)" -eq 0 ] && printf '%s' "$out" | grep -qF 'no suite criterion for new-case' \
+  && pass "T6 new eval directory: exit 2, no suite criterion" || fail "T6 rc=$rc: $out"
+
+# T7. a criterion without an eval directory
+reset; C=$(mk_suite_checkout); printf 'ghost at-least 1\n' >> "$C/tests/behavior/evals/suite.conf"
+git -C "$C" add -A && git -C "$C" commit -q -m ghost
+out=$(srun "$C" --yes); rc=$?
+[ "$rc" -eq 2 ] && [ "$(evals)" -eq 0 ] && printf '%s' "$out" | grep -qF 'no eval directory for ghost' \
+  && pass "T7 extra suite.conf line: exit 2, no eval directory" || fail "T7 rc=$rc: $out"
+
+# T8. read-order cases run on the setup status stub, the setup cases on the real script
+reset; C=$(mk_suite_checkout); rm -rf "$T/snap8"; sha=$(git -C "$C" rev-parse HEAD)
+out=$(PATH=$GOODPATH STUB_SNAPSHOT_DIR="$T/snap8" bash "$C/tests/behavior/run-behavior" --suite --yes 2>&1); rc=$?
+rec8=$(ls "$T"/runs/*.md 2>/dev/null | head -n1); ok=1
+[ -n "$rec8" ] || ok=0
+for c in read-order read-order-heldout; do grep -qF "Setup status of $sha in $c: stubbed (ready)" "$rec8" || ok=0; done
+grep -q 'Setup status of .* in setup-' "$rec8" && ok=0
+STUBF="$C/tests/behavior/lib/setup-status-stub"
+for n in 1 2 3; do cmp -s "$T/snap8/call-$n/scripts/graphify-setup" "$STUBF" && ok=0; [ -f "$T/snap8/call-$n/scripts/graphify-setup" ] || ok=0; done
+for n in 4 5; do cmp -s "$T/snap8/call-$n/scripts/graphify-setup" "$STUBF" || ok=0; done
+[ "$ok" -eq 1 ] && pass "T8 read-order on the status stub, setup cases on the real script" || fail "T8 rc=$rc: $(grep -i 'setup status' "${rec8:-/dev/null}") $out"
+
+# T9. record and summary land in the record folder; a pre-existing file stays
+reset; C=$(mk_suite_checkout); printf 'keep\n' > "$T/runs/keep.md"; cp "$T/runs/keep.md" "$T/keep.orig"
+out=$(srun "$C" --yes); rc=$?
+nmd=$(ls "$T"/runs/2*.md 2>/dev/null | wc -l | tr -d ' '); njs=$(ls "$T"/runs/2*.json 2>/dev/null | wc -l | tr -d ' ')
+[ "$nmd" -eq 1 ] && [ "$njs" -eq 1 ] && cmp -s "$T/runs/keep.md" "$T/keep.orig" \
+  && pass "T9 record and summary in the record folder, the old file unchanged" || fail "T9 md=$nmd json=$njs: $out"
+# default folder in suite mode: $WARDEN_LESSON_ROOT/suite
+reset; C=$(mk_suite_checkout); rm -rf "$T/lroot"
+out=$(env -u WARDEN_BEHAVIOR_RECORD_DIR PATH=$GOODPATH WARDEN_LESSON_ROOT="$T/lroot" bash "$C/tests/behavior/run-behavior" --suite --yes 2>&1); rc=$?
+[ -n "$(ls "$T"/lroot/suite/2*.json 2>/dev/null)" ] && [ -n "$(ls "$T"/lroot/suite/2*.md 2>/dev/null)" ] \
+  && pass "T9 default folder is WARDEN_LESSON_ROOT/suite" || fail "T9 default folder: $(ls -R "$T/lroot" 2>&1) $out"
+
+# T10. --case read-order runs one eval
+reset; C=$(mk_suite_checkout)
+out=$(srun "$C" --yes --case read-order); rc=$?
+[ "$(evals)" -eq 1 ] && pass "T10 --case read-order: one eval" || fail "T10 rc=$rc evals=$(evals): $out"
+
+# T9s. the summary models come from the traces: main arm claude-stub-1 (no key fallback), ab arm claude-x-1
+reset; C=$(mk_suite_checkout)
+out=$(srun "$C" --yes --runs 1 --ab-model claude-x-1); rc=$?
+sj9=$(ls "$T"/runs/2*.json 2>/dev/null | head -n1)
+if [ -n "$sj9" ] && python3 -I - "$sj9" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+m = {(c["case"], c["arm"]): c["model"] for c in d["cases"]}
+sys.exit(0 if d["model"] == "claude-stub-1" and m[("read-order", "main")] == "claude-stub-1" and m[("read-order", "ab")] == "claude-x-1" else 1)
+PY
+then pass "T9s summary models: main claude-stub-1, ab claude-x-1"; else fail "T9s rc=$rc: $(cat "${sj9:-/dev/null}") $out"; fi
+
+# T14. suite mode refuses --model
+reset; C=$(mk_suite_checkout)
+out=$(srun "$C" --yes --model claude-g-1); rc=$?
+[ "$rc" -eq 2 ] && [ "$(evals)" -eq 0 ] && printf '%s' "$out" | grep -qF 'suite does not take --model; use --ab-model' \
+  && pass "T14 --suite --model: exit 2, message, no eval" || fail "T14 rc=$rc: $out"
+
+# T11. --ab-model doubles the arms; the case count stays distinct case names
+reset; C=$(mk_suite_checkout)
+out=$(printf 'n\n' | PATH=$GOODPATH bash "$C/tests/behavior/run-behavior" --suite --ab-model claude-x-1 2>&1)
+printf '%s' "$out" | grep -qF 'Agents: 50 (5 cases, 10 arms x 5 runs)' && printf '%s' "$out" | grep -qF 'Start 50 agents?' \
+  && pass "T11 --ab-model: Agents: 50 (5 cases, 10 arms x 5 runs)" || fail "T11 estimate: $out"
+reset; out=$(printf 'n\n' | PATH=$GOODPATH bash "$C/tests/behavior/run-behavior" --suite --ab-model claude-x-1 --runs 1 2>&1)
+printf '%s' "$out" | grep -qF 'Agents: 10 ' && pass "T11 --runs 1: Agents: 10" || fail "T11 runs 1: $out"
+reset; out=$(srun "$C" --yes --ab-model claude-x-1 --runs 1)
+printf '%s' "$out" | grep -cE '^\| read-order \|' | grep -q 2 && pass "T11 ab arms: two read-order rows" || fail "T11 ab rows: $out"
+
+# T12s. a second suite run with another CLI version and read-order failing: FLIPPED row, recorder exit code
+reset; C=$(mk_suite_checkout)
+out1=$(srun "$C" --yes); rc1=$?
+rm -f "$WARDEN_STUB_LOG.count"
+out2=$(STUB_CLAUDE_VERSION="2.2.0 (Claude Code)" STUB_TRIG_4_READ_ORDER=0 srun "$C" --yes); rc2=$?
+printf '%s' "$out2" | grep -E '^read-order \|' | grep -qF 'FLIPPED' && [ "$rc1" -eq 0 ] && [ "$rc2" -eq 1 ] \
+  && pass "T12s second suite run: read-order FLIPPED, exit code is the recorder's" || fail "T12s rc1=$rc1 rc2=$rc2: $out2"
 
 [ "$FAILURES" -eq 0 ]

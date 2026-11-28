@@ -784,4 +784,21 @@ rsetup s1 2026-11-20T10:05:00Z "alpha#aaaa1111"
 LIST_AFTER="$(WL list --json)"
 [ "$LIST_BEFORE" = "$LIST_AFTER" ] && pass "list --json ignores nudge and setup-call lines" || fail "list --json changed"
 
+# suite subcommand: finds <checkout>/tests/behavior/run-behavior from the real path of the script.
+FAKE="$(cd -P "$(mktemp -d "$HARNESS_TMP/fake.XXXXXX")" && pwd)"
+mkdir -p "$FAKE/plugins/warden/scripts" "$FAKE/tests/behavior"
+cp "$SCRIPT" "$FAKE/plugins/warden/scripts/warden-lesson"
+FSCRIPT="$FAKE/plugins/warden/scripts/warden-lesson"
+SMSG="$(python3 -I "$FSCRIPT" suite --case read-order 2>&1)"; SRC=$?
+[ "$SRC" = 2 ] && [ "$SMSG" = "suite: run-behavior not found at $FAKE/tests/behavior/run-behavior" ] \
+  && pass "suite with no run-behavior exits 2 with the message" || fail "suite missing: rc=$SRC $SMSG"
+printf '#!/usr/bin/env bash\necho "$*" > "%s/args.log"\ncat > "%s/stdin.log"\nexit 1\n' "$FAKE" "$FAKE" > "$FAKE/tests/behavior/run-behavior"
+chmod 755 "$FAKE/tests/behavior/run-behavior"
+echo hello | python3 -I "$FSCRIPT" suite --case read-order --runs 1; SRC=$?
+[ "$(cat "$FAKE/args.log")" = "--suite --case read-order --runs 1" ] && [ "$SRC" = 1 ] && [ "$(cat "$FAKE/stdin.log")" = hello ] \
+  && pass "suite runs the wrapper with the flags, passes stdin and the exit code" || fail "suite pass-through: rc=$SRC args=$(cat "$FAKE/args.log" 2>&1)"
+# T53 (D1). --runs 0 reaches the wrapper, which refuses it; it is not read as "unset".
+python3 -I "$FSCRIPT" suite --runs 0 </dev/null >/dev/null 2>&1
+[ "$(cat "$FAKE/args.log")" = "--suite --runs 0" ] && pass "T53 suite passes --runs 0 to the wrapper" || fail "T53 args=$(cat "$FAKE/args.log" 2>&1)"
+
 harness_exit
