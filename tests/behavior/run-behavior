@@ -269,6 +269,12 @@ python3 -I "$HERE/lib/record.py" --conf "$WORK/conf" --out-dir "$RECORD_DIR" --r
   --raw-dir "$RAW_BASE/$ID" ${SUMMARY_ARGS[@]+"${SUMMARY_ARGS[@]}"} ${MERGE_STUB[@]+"${MERGE_STUB[@]}"} "${RESULT_ARGS[@]}"
 rc=$?
 
+# Suite mode: compare with the newest earlier record that has different pins. A failure here keeps the recorder's code.
+if [ "$SUITE" -eq 1 ] && [ "$rc" -le 1 ]; then
+  python3 -I "$HERE/lib/suite_compare.py" --folder "$RECORD_DIR" --new "$ID" --repo "$REPO" \
+    || echo "warning: the suite comparison failed" >&2
+fi
+
 # Keep the raw results outside the repo.
 if [ "$rc" -le 1 ]; then
   mkdir -p "$RAW_BASE/$ID" && cp "$WORK"/result-[0-9].json "$WORK"/result-[0-9][0-9].json "$RAW_BASE/$ID/" 2>/dev/null || true

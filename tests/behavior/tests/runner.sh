@@ -597,4 +597,12 @@ printf '%s' "$out" | grep -qF 'Agents: 10 ' && pass "T11 --runs 1: Agents: 10" |
 reset; out=$(srun "$C" --yes --ab-model claude-x-1 --runs 1)
 printf '%s' "$out" | grep -cE '^\| read-order \|' | grep -q 2 && pass "T11 ab arms: two read-order rows" || fail "T11 ab rows: $out"
 
+# T12s. a second suite run with another CLI version and read-order failing: FLIPPED row, recorder exit code
+reset; C=$(mk_suite_checkout)
+out1=$(srun "$C" --yes); rc1=$?
+rm -f "$WARDEN_STUB_LOG.count"
+out2=$(STUB_CLAUDE_VERSION="2.2.0 (Claude Code)" STUB_TRIG_4_READ_ORDER=0 srun "$C" --yes); rc2=$?
+printf '%s' "$out2" | grep -E '^read-order \|' | grep -qF 'FLIPPED' && [ "$rc1" -eq 0 ] && [ "$rc2" -eq 1 ] \
+  && pass "T12s second suite run: read-order FLIPPED, exit code is the recorder's" || fail "T12s rc1=$rc1 rc2=$rc2: $out2"
+
 [ "$FAILURES" -eq 0 ]

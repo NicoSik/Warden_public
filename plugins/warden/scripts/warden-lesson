@@ -1130,6 +1130,26 @@ def _ledger():
     return mod
 
 
+def _suite(args):
+    """Run <checkout>/tests/behavior/run-behavior --suite with the given flags."""
+    import subprocess
+    root = os.path.realpath(__file__)
+    for _ in range(4):  # warden-lesson -> scripts -> warden -> plugins -> checkout
+        root = os.path.dirname(root)
+    wrapper = os.path.join(root, "tests", "behavior", "run-behavior")
+    if not os.path.isfile(wrapper):
+        print("suite: run-behavior not found at " + wrapper)
+        return 2
+    cmd = ["bash", wrapper, "--suite"]
+    if args.case:
+        cmd += ["--case", args.case]
+    if args.runs:
+        cmd += ["--runs", str(args.runs)]
+    if args.ab_model:
+        cmd += ["--ab-model", args.ab_model]
+    return subprocess.call(cmd)
+
+
 def main(argv=None):
     import argparse  # Lazy: the hook path does not need it.
     parser = argparse.ArgumentParser(prog="warden-lesson")
@@ -1160,6 +1180,11 @@ def main(argv=None):
     ps = sub.add_parser("schedule")
     ps.add_argument("action", choices=("install", "uninstall", "confirm"))
     ps.set_defaults(func=lambda a: _ledger().schedule_cmd(a))
+    pu = sub.add_parser("suite")
+    pu.add_argument("--case")
+    pu.add_argument("--runs", type=int)
+    pu.add_argument("--ab-model", dest="ab_model")
+    pu.set_defaults(func=_suite)
     sub.add_parser("hook").set_defaults(func=_hook)
     sub.add_parser("nudge").set_defaults(func=_nudge)
     args, _ = parser.parse_known_args(argv)

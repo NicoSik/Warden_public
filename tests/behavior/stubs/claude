@@ -8,7 +8,7 @@ fi
 LOG="${WARDEN_STUB_LOG:?}"
 if [ "${1:-}" = "--version" ]; then
   echo "CALL version" >> "$LOG"
-  echo "2.1.305 (Claude Code)"
+  echo "${STUB_CLAUDE_VERSION:-2.1.305 (Claude Code)}"
   exit 0
 fi
 if [ "${1:-}" = "plugin" ] && [ "${2:-}" = "eval" ]; then
@@ -81,7 +81,7 @@ for name in os.environ["STUB_CASES"].split():
         out.append({"score": 1.0, "passed": True, "turns": 3, "costUsd": 0.05,
                     "error": err, "tracePath": tp, "graders": graders})
     cases.append({"name": name, "dir": "x", "arms": {"with": out}, "aggregates": {}})
-res = {"schemaVersion": 1, "claudeVersion": "2.1.305", "startedAt": "2026-10-21T00:00:00Z",
+res = {"schemaVersion": 1, "claudeVersion": os.environ.get("STUB_CLAUDE_VERSION") or "2.1.305", "startedAt": "2026-10-21T00:00:00Z",
        "durationSeconds": 1, "costUsd": 0.05 * runs * len(cases), "partial": os.environ.get("STUB_PARTIAL") == "1",
        "suite": {"ablation": "none", "modelOverride": None, "plugins": []},
        "cases": cases, "aggregates": {}}
